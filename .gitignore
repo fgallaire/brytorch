@@ -1,0 +1,14 @@
+/pytorch
+/build
+/_site
+/.wasthon
+/.emsdk
+/.protoc
+/loader/brython
+*.o
+*.a
+/loader/cpython-tests
+/loader/test-cpython-all.html
+/loader/test-cpython.html
+/loader/brython-src.js
+/loader/wasthon-*.js

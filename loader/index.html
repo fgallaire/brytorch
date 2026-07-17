@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>BryTorch tests</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 900px; margin: 2rem auto; padding: 0 1rem; line-height: 1.5; }
+  h1 { font-size: 1.6rem; }
+  h2 { font-size: 1.1rem; border-bottom: 1px solid #ccc; padding-bottom: 0.2em; margin-top: 1.8em; }
+  ul.dash { list-style: none; padding: 0; }
+  ul.dash li { margin: 0.6em 0; }
+  ul.dash li a { text-decoration: none; color: #04a; }
+  ul.dash li a:hover { text-decoration: underline; }
+  .note { color: #666; font-size: 0.9em; }
+</style>
+</head>
+<body>
+
+<h1>BryTorch tests</h1>
+
+<p class="note">
+  BryTorch runs the real PyTorch in the browser — the genuine
+  <code>torch._C</code> (whole-archive ATen compiled to WebAssembly) plus
+  torch's own pure-Python layer on top of Brython, through the Wasthon
+  C-API bridge. Not a reimplementation: upstream PyTorch itself.
+</p>
+
+<h2>Test-suite dashboard</h2>
+<ul class="dash">
+  <li><a href="test-cpython-all.html"><strong>▶ CPython suite dashboard</strong></a> — CPython's own <code>Lib/test/test_*.py</code> against the Wasthon bridge stack BryTorch runs on (the authoritative behavioural reference).</li>
+</ul>
+
+<h2>Smoke page</h2>
+<ul class="dash">
+  <li><a href="test-brytorch.html"><strong>▶ BryTorch</strong></a> — boots <code>torch._C</code>, imports torch end to end, then tensor create / <code>+</code> / <code>*</code> / <code>@</code> / <code>sum()</code> with the real ATen kernels.</li>
+</ul>
+
+</body>
+</html>

@@ -1,0 +1,43 @@
+name: rebuild-aten
+
+# Manual, heavyweight: rebuilds libtorch_cpu/c10 (+onnx/protobuf) to wasm
+# from source and refreshes the `aten-wasm` Release asset that deploy.yml
+# consumes. On a 4-vCPU runner this is a multi-hour build; ccache is
+# persisted across runs, so if a first attempt times out, RE-RUN it — the
+# warm cache converges quickly.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  aten:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ccache
+          key: aten-ccache-${{ github.run_id }}
+          restore-keys: aten-ccache-
+
+      - name: Build ATen to wasm
+        run: |
+          sudo apt-get install -y ccache zstd
+          export _EMCC_CCACHE=1
+          ./build.sh deps sources aten pack-aten
+
+      - name: Publish Release asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create aten-wasm --notes "ATen wasm build (libs + generated headers)" \
+            -R "$GITHUB_REPOSITORY" 2>/dev/null || true
+          gh release upload aten-wasm build/aten-wasm-*.tar.zst --clobber \
+            -R "$GITHUB_REPOSITORY"

@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>BryTorch — smoke test</title>
+<script src="brython/brython.js"></script>
+<script src="brython/brython_stdlib.js"></script>
+<script src="../build/torch_vfs.js"></script>
+</head>
+<body>
+<p style="font-size:0.85em;margin:0 0 1em 0;"><a href="index.html">← back to index</a></p>
+<h1>BryTorch — smoke test</h1>
+<p style="color:#666;font-size:0.9em;max-width:70ch;">
+  Imports <b>torch 2.14</b> — the real thing: the genuine <code>torch._C</code>
+  (whole-archive ATen compiled to wasm) plus torch's own Python layer — and
+  runs tensor math end to end.
+</p>
+<pre id="log" style="background:#f4f4f4;padding:1em;font-size:13px;line-height:1.4;">boot…
+</pre>
+<script type="module">
+const $B = __BRYTHON__;
+const logEl = document.getElementById('log');
+function log(s) { logEl.textContent += s + '\n'; }
+
+/* npth.wasm is served as <95 MB parts (GitHub Pages file-size limit);
+   fetch them all and hand the assembled buffer to emscripten. */
+async function fetchWasm() {
+  // The wasm ships whole when it fits under GitHub Pages' ~100 MB per-file
+  // ceiling (wasm-opt -Oz keeps it there); if a future build ever exceeds
+  // it, build.sh splits it into <95 MiB parts + a manifest, reassembled here.
+  const man = await fetch('../build/npth.parts.json')
+    .then(r => r.ok ? r.json() : null).catch(() => null);
+  if (!man) return await (await fetch('../build/npth.wasm')).arrayBuffer();
+  const buf = new Uint8Array(man.total);
+  let off = 0;
+  for (const p of man.parts) {
+    const part = new Uint8Array(await (await fetch('../build/' + p)).arrayBuffer());
+    buf.set(part, off); off += part.length;
+  }
+  return buf.buffer;
+}
+
+try {
+  log('loading npth.mjs + wasm parts…');
+  const t0 = performance.now();
+  const wasmBuf = await fetchWasm();
+  const factory = (await import('../build/npth.mjs')).default;
+  const M = await factory({
+    instantiateWasm(imports, done) {
+      WebAssembly.instantiate(wasmBuf, imports).then(r => done(r.instance));
+      return {};
+    }
+  });
+  log('instantiated in ' + ((performance.now() - t0) / 1000).toFixed(1) + ' s; wasthon_init…');
+
+  /* CPython: PyCFunction.__module__ is a writable getset (m_module); torch
+     stamps __module__='torch' on every _VariableFunctions entry. Installed
+     post-boot (inside brython.js's own init it destabilizes class setup). */
+  for (const c of [$B.builtin_function_or_method, $B.builtin_method]) {
+    $B.set_to_dict(c, '__module__', $B.getset_descriptor.$factory(c, '__module__', [
+      function (self) { return self.$__module__ !== undefined ? self.$__module__ : 'builtins'; },
+      function (self, v) { self.$__module__ = v; }]));
+  }
+  M._wasthon_init();
+  window._twasm = M;
+
+  /* type.__init__ slot: THPVariableMetaType_init chains to
+     PyType_Type.tp_init (CPython type_init is a no-op validation); the
+     bridge struct has NULL there. Install a no-op. */
+  const tpInitIdx = M.addFunction(function (a, b, c) { return 0; }, 'iiii');
+  M.HEAP32[(M.wasthon._typeTypeStructPtr + 20) >> 2] = tpInitIdx;
+
+  /* pybind11 takes (PyObject*)&PyProperty_Type / &PyStaticMethod_Type
+     directly (enum_base::init) — bind the static structs from the page. */
+  const rtw = M.wasthon;
+  for (const [addr, cls] of [[M._wasthon_torch_property_addr(), $B.builtins.property],
+                             [M._wasthon_torch_staticmethod_addr(), $B.builtins.staticmethod]]) {
+    rtw.handles.set(addr, cls);
+    if (rtw.builtinClassForStruct) rtw.builtinClassForStruct.set(addr, cls);
+  }
+
+  const orig = $B.$__import__;
+  function runC(fullname, pyinit) {
+    if ($B.imported[fullname] !== undefined) return true;
+    const parts = fullname.split('.');
+    const parent = parts.slice(0, -1).join('.');
+    if (parent && $B.imported[parent] === undefined) {
+      try { orig(parent, {}, {}, [], 0); } catch (e) {}
+    }
+    if ($B.imported[fullname] !== undefined) return true;
+    log('  [C] init ' + fullname + '…');
+    const def = M[pyinit]();
+    if (def === 0) throw new Error(fullname + ' PyInit returned NULL');
+    let mod = null;
+    try { if (!M.wasthon.moduleDefs.get(def)) mod = M.wasthon.handles.get(def); } catch (e) {}
+    if (!mod) {
+      try { const di = M.wasthon.moduleDefs.get(def); if (di) di.name = fullname; } catch (e) {}
+      const cmod = M._wasthon_module_create(def);
+      if (cmod === 0) throw new Error(fullname + ' init FAILED');
+      mod = M.wasthon.handles.get(cmod);
+    } else {
+      try { $B.str_dict_set($B.get_dict(mod), '__name__', fullname); } catch (e) {}
+    }
+    $B.imported[fullname] = mod;
+    if (parent) {
+      try { $B.str_dict_set($B.get_dict($B.imported[parent]), parts[parts.length - 1], mod); } catch (e) {}
+    }
+    if (fullname === 'torch._C') {
+      /* the C module is a PACKAGE (VFS stubs live under torch._C.*) */
+      try { $B.str_dict_set($B.get_dict(mod), '__path__', $B.$list([])); } catch (e) {}
+      /* v1: torch's C _add_docstr casts handles to C object layouts;
+         docstrings are cosmetic — same semantics, Brython-side. */
+      const addDoc = function (obj, doc) {
+        try { obj.__doc__ = doc; } catch (e) {}
+        try { if (obj.$function_infos && $B.func_attrs) obj.$function_infos[$B.func_attrs.__doc__] = doc; } catch (e) {}
+        return obj;
+      };
+      addDoc.$infos = { __name__: '_add_docstr' };
+      $B.str_dict_set($B.get_dict(mod), '_add_docstr', addDoc);
+    }
+    log('  [C] ' + fullname + ' ready');
+    return true;
+  }
+
+  $B.$__import__ = function (mod_name, globals, locals, fromlist, level) {
+    try {
+      if (mod_name === 'torch._C') runC('torch._C', '_PyInit__C');
+      if (mod_name === 'torch' && fromlist && fromlist.length) {
+        for (const f of fromlist) if (f === '_C') runC('torch._C', '_PyInit__C');
+      }
+    } catch (e) { log('import hook EXC: ' + (e && (e.stack || e.message) || e)); }
+    return orig.apply(this, arguments);
+  };
+
+  brython({ debug: 1 });
+  log('running python…');
+  $B.runPythonSource(`
+import sys
+import traceback
+from browser import document
+
+class _DomOut:
+    def write(self, t):
+        document['log'].textContent += t
+    def flush(self):
+        pass
+
+sys.stdout = _DomOut()
+sys.stderr = _DomOut()
+if not hasattr(sys, '_clear_type_descriptors'):
+    sys._clear_type_descriptors = lambda *a, **k: None
+
+_ok = 0
+_fail = 0
+
+def check(name, fn):
+    global _ok, _fail
+    try:
+        r = fn()
+        _ok += 1
+        print("PASS " + name + " => " + str(r)[:70].replace("\\n", " | "))
+    except BaseException as e:
+        _fail += 1
+        print("FAIL " + name + " " + type(e).__name__ + ": " + str(e)[:80])
+
+import torch
+print("import torch OK, version " + torch.__version__)
+
+check("tensor", lambda: torch.tensor([1, 2]))
+check("add", lambda: torch.tensor([1, 2]) + 1)
+check("mul", lambda: torch.tensor([1, 2]) * torch.tensor([3, 4]))
+check("matmul", lambda: torch.tensor([[1., 2.], [3., 4.]]) @ torch.tensor([[1., 2.], [3., 4.]]))
+check("sum", lambda: torch.tensor([[1., 2.], [3., 4.]]).sum())
+check("mean", lambda: torch.tensor([1., 2., 3., 4.]).mean())
+check("item", lambda: (torch.tensor([1, 2]) + 1)[0].item())
+check("indexing", lambda: torch.tensor([[1, 2], [3, 4]])[1, 0].item())
+check("zeros/ones", lambda: (torch.zeros(2, 2) + torch.ones(2, 2)).sum().item())
+check("arange", lambda: torch.arange(6).reshape(2, 3))
+check("dtype", lambda: torch.tensor([1.5]).dtype)
+check("float math", lambda: torch.tensor([4.0]).sqrt().item())
+check("comparison", lambda: (torch.tensor([1, 2, 3]) > 1).tolist())
+check("t + 1 exact", lambda: (torch.tensor([1, 2]) + 1).tolist() == [2, 3] or 1/0)
+
+print()
+print(str(_ok) + "/" + str(_ok + _fail) + " checks passed")
+`, 'brytorch_demo');
+} catch (e) {
+  log('ERROR: ' + (e && (e.stack || e.message) || e));
+  try { log('py exc: ' + $B.error_trace(e)); } catch (_) {}
+}
+</script>
+</body>
+</html>

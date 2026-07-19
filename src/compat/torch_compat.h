@@ -5,9 +5,6 @@
  * the torch port doesn't touch the wasthon4 working tree.
  *
  * Known semantic debts (compile now, resolve at run stage):
- *  - PySliceObject: python_variable_indexing reads ->start/stop/step
- *    directly (tensor-valued slice bounds); the bridge must materialize
- *    slice structs for that path.
  *  - _wasthon_code / PyTracebackObject member layout: only pybind11's
  *    error-formatting path dereferences them; bridge must materialize or
  *    the path must stay cold.
@@ -56,7 +53,11 @@ static inline PyObject *&_wasthon_tuple_get_lv(PyObject *t, Py_ssize_t i) {
 #define PyTuple_GET_SIZE(tup) PyTuple_Size((PyObject *)(tup))
 
 /* --- structs torch/pybind11 dereference directly --- */
+/* CPython layout (header + 3 slots). The bridge materializes a backing
+ * struct for every slice handle (wrap() in wasthon.js): ob_refcnt @0,
+ * start/stop/step handles @4/8/12 — so ->start/stop/step reads resolve. */
 typedef struct {
+    PyObject_HEAD
     PyObject *start;
     PyObject *stop;
     PyObject *step;

@@ -61,9 +61,20 @@ class _TracingResult(unittest.TestResult):
         except Exception:
             pass
 
-def run_module(mod):
+def _iter_tests(suite):
+    for t in suite:
+        if isinstance(t, unittest.TestSuite):
+            yield from _iter_tests(t)
+        else:
+            yield t
+
+def run_module(mod, k=None):
     loader = unittest.TestLoader()
     suite = loader.loadTestsFromModule(mod)
+    if k:
+        # ?k=substring — pytest-style narrowing so a probe runs seconds,
+        # not the whole suite
+        suite = unittest.TestSuite([t for t in _iter_tests(suite) if k in t.id()])
     res = _TracingResult()
     suite.run(res)
     ran = res.testsRun
@@ -71,12 +82,22 @@ def run_module(mod):
     skip = len(res.skipped)
     passed = ran - fail - skip
     msgs = []
+    hist = {}
     for case, tb in (res.failures + res.errors):
         last = ""
         for line in tb.splitlines():
             if line.strip():
                 last = line.strip()
         msgs.append(case.id().split(".")[-1] + ": " + last[:100])
+        key = last[:90]
+        hist[key] = hist.get(key, 0) + 1
+    top = sorted(hist.items(), key=lambda kv: -kv[1])[:15]
+    for key, n in top:
+        msgs.append("CLUSTER x" + str(n) + ": " + key)
+    if k and (res.failures or res.errors):
+        # narrowed probe: ship the FIRST full traceback for diagnosis
+        first = (res.failures + res.errors)[0]
+        msgs.append("FIRST TB:\n" + first[1][-1800:])
     return passed, fail, skip, msgs
 </script>
 
@@ -96,7 +117,9 @@ const ALL_MODULES = [
   // the crash from eating the suites after it
   'test_autograd',
 ];
-const only = new URLSearchParams(location.search).get('test');
+const params = new URLSearchParams(location.search);
+const only = params.get('test');
+const kFilter = params.get('k');
 const MODULES = only ? [only] : ALL_MODULES;
 
 function init() {
@@ -409,12 +432,12 @@ try {
       "\n    _tb.print_exception(_e, file=_sio)" +
       "\n    print(\"IMPORT TRACEBACK:\\n\" + _sio.getvalue())" +
       "\nelse:" +
-      "\n    _p, _f, _s, _fails = run_module(_mod)" +
+      "\n    _p, _f, _s, _fails = run_module(_mod, " + JSON.stringify(kFilter) + ")" +
       "\n    print(\"ran=\" + str(_p + _f + _s))" +
       "\n    print(\"passed=\" + str(_p))" +
       "\n    print(\"failed+errored=\" + str(_f))" +
       "\n    print(\"skipped=\" + str(_s))" +
-      "\n    for _m in _fails[:12]:" +
+      "\n    for _m in _fails[:40]:" +
       "\n        print(\"  FAIL \" + _m)" +
       "\n";
     let buf = '';

@@ -32,6 +32,21 @@ const EXCLUDE_DIRS = new Set([
 ]);
 
 const PATCH = {
+  // _make_grads pulls expect_true/sym_eq from symbolic_shapes, whose module
+  // level does `import sympy` (not shipped). Concrete-shape equivalents are
+  // exact for the eager build: expect_true is a guard passthrough, sym_eq a
+  // structural size compare.
+  'torch.autograd': (s) => s.replace(
+    '            from torch.fx.experimental.symbolic_shapes import expect_true, sym_eq',
+    '            try:  # wasthon: no sympy — concrete-shape equivalents\n'
+    + '                from torch.fx.experimental.symbolic_shapes import expect_true, sym_eq\n'
+    + '            except ModuleNotFoundError:\n'
+    + '                def expect_true(x):\n'
+    + '                    return x\n'
+    + '                def sym_eq(a, b):\n'
+    + '                    if isinstance(a, (tuple, list)) and isinstance(b, (tuple, list)):\n'
+    + '                        return len(a) == len(b) and all(sym_eq(x, y) for x, y in zip(a, b))\n'
+    + '                    return a == b'),
   // No shared-object preloading in the browser: the wasm module is already
   // linked. ctypes never gets exercised on this path.
   'torch._utils_internal': (s) => s
@@ -142,6 +157,11 @@ const PATCH = {
              'getattr(platform, "mac_ver", lambda: ("", ("", "", ""), ""))()'),
   // no shm manager binary in the browser (libshm is stubbed wasm-side)
   'torch': (s) => s
+    // torch.__getattr__ lazily imports submodules RELATIVELY; Brython's
+    // importlib._resolve_name rejects it ("beyond top-level package",
+    // BRYTHON_FIX candidate) — the absolute form is semantically identical
+    .replace('return importlib.import_module(f".{name}", __name__)',
+             'return importlib.import_module(f"{__name__}.{name}")')
     // _native (out-of-tree override ops) trips on str(FunctionSchema)
     // lacking the "ns::" prefix in this build; nothing in the v1 slice
     // uses these ops — degrade the LAST import of __init__ gracefully
@@ -705,11 +725,30 @@ add('torch._inductor.utils', [
   '    raise ImportError("torch._inductor is not in this wasm build (v1)")',
   ''].join('\n'), false);
 
+// logging_utils imports LazyString (a deferred-format helper, pure python
+// semantics replicated) from the excluded dynamo tree
+add('torch._dynamo.utils', [
+  'class LazyString:',
+  '    def __init__(self, func, *args, **kwargs):',
+  '        self.func = func',
+  '        self.args = args',
+  '        self.kwargs = kwargs',
+  '    def __str__(self):',
+  '        return self.func(*self.args, **self.kwargs)',
+  'def __getattr__(name):',
+  '    raise ImportError("torch._dynamo is not in this wasm build (v1): attr utils." + name)',
+  ''].join('\n'), false);
+
 // autograd/test_logging.py mentions it under `if __name__ == "__main__"` —
 // Brython statically pre-resolves every import in the source, so the module
 // must exist; the eager-build equivalents are the common_utils ones
 add('torch._dynamo.test_case', [
   'from torch.testing._internal.common_utils import TestCase, run_tests',
+  ''].join('\n'), false);
+
+add('torch._export.utils', [
+  'def __getattr__(name):',
+  '    raise ImportError("torch._export is not in this wasm build (v1): attr utils." + name)',
   ''].join('\n'), false);
 
 // two_tensor.py (test_serialization) imports this experimental export marker

@@ -109,6 +109,15 @@ if 'type.ob_base' in s:
     import re
     s = re.sub(r'type\.ob_base\s*=\s*\{[^}]*\};', 'type.ob_refcnt = 0;  /* brytorch: wasthon PyObject layout */', s)
     f.write_text(s)
+f = pt / 'torch/csrc/autograd/python_engine.cpp'
+s = f.read_text()
+old = '      !PyGILState_Check(),'
+if old in s:
+    # single-threaded wasm: the engine's anti-deadlock "GIL must NOT be
+    # held" guard is moot (the bridge's PyGILState_Check is constant 1,
+    # and every other site asserts the OPPOSITE polarity)
+    s = s.replace(old, '      true,  /* brytorch: single-thread, anti-deadlock GIL guard moot */')
+    f.write_text(s)
 f = pt / 'torch/csrc/utils/pybind.h'
 s = f.read_text()
 old = 'PYBIND11_DECLARE_HOLDER_TYPE(T, c10::SingletonOrSharedTypePtr<T>)'

@@ -106,16 +106,17 @@ const log = (s) => console.log(s);
 const ALL_MODULES = [
   'test_testing',
   'test_indexing',
-  'test_view_ops',
   'test_shape_ops',
   'test_type_promotion',
   'test_sort_and_select',
-  'test_reductions',
   'test_serialization',
   'test_torch',
-  // LAST: its import currently aborts the wasm runtime (open front) — keep
-  // the crash from eating the suites after it
   'test_autograd',
+  // LAST: the two heap-hungry suites — after ~7500 tests in one page the
+  // wasm heap runs out and whatever imports NEXT aborts; keep the damage
+  // at the tail
+  'test_view_ops',
+  'test_reductions',
 ];
 const params = new URLSearchParams(location.search);
 const only = params.get('test');
@@ -432,7 +433,7 @@ try {
       "\n    _tb.print_exception(_e, file=_sio)" +
       "\n    print(\"IMPORT TRACEBACK:\\n\" + _sio.getvalue())" +
       "\nelse:" +
-      "\n    _p, _f, _s, _fails = run_module(_mod, " + JSON.stringify(kFilter) + ")" +
+      "\n    _p, _f, _s, _fails = run_module(_mod, " + (kFilter ? JSON.stringify(kFilter) : "None") + ")" +
       "\n    print(\"ran=\" + str(_p + _f + _s))" +
       "\n    print(\"passed=\" + str(_p))" +
       "\n    print(\"failed+errored=\" + str(_f))" +
@@ -479,7 +480,8 @@ try {
       totRan += ran; totPass += passed; totFail += fail; totSkip += skipped;
       const rn = passed + fail, rate = rn ? Math.round(100 * passed / rn) : 100;
       const bar = `<span class="barbg"><span class="bar" style="width:${Math.round(0.8 * rate)}px"></span></span> ${rate}%`;
-      setRow(i, allpass ? 'allpass' : 'somefail', [ran, passed, fail, skipped, bar, allpass ? '✓' : '✗ ' + secs + 's']);
+      const heapMB = Math.round(M.HEAPU8.length / 1048576);
+      setRow(i, allpass ? 'allpass' : 'somefail', [ran, passed, fail, skipped, bar, (allpass ? '✓' : '✗ ' + secs + 's') + ' · heap ' + heapMB + ' Mo']);
     }
     const rn = totPass + totFail;
     summary.innerHTML =

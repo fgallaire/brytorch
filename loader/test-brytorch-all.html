@@ -445,10 +445,10 @@ try {
       "\n    print(\"IMPORT TRACEBACK:\\n\" + _sio.getvalue())" +
       "\nelse:" +
       "\n    _p, _f, _s, _fails = run_module(_mod, " + (kFilter ? JSON.stringify(kFilter) : "None") + ")" +
-      "\n    print(\"ran=\" + str(_p + _f + _s))" +
-      "\n    print(\"passed=\" + str(_p))" +
-      "\n    print(\"failed+errored=\" + str(_f))" +
-      "\n    print(\"skipped=\" + str(_s))" +
+      "\n    print(\"@@ran=\" + str(_p + _f + _s))" +
+      "\n    print(\"@@passed=\" + str(_p))" +
+      "\n    print(\"@@failed=\" + str(_f))" +
+      "\n    print(\"@@skipped=\" + str(_s))" +
       "\n    for _m in _fails[:40]:" +
       "\n        print(\"  FAIL \" + _m)" +
       "\n";
@@ -485,8 +485,8 @@ try {
       }
       lf.textContent += '=== ' + mod + ' ===\n' + buf + '\n';
     } else {
-      const ran = g(/ran\s*=\s*(\d+)/) || 0, passed = g(/passed\s*=\s*(\d+)/) || 0;
-      const fail = g(/failed\+errored\s*=\s*(\d+)/) || 0, skipped = g(/skipped\s*=\s*(\d+)/) || 0;
+      const ran = g(/@@ran=(\d+)/) || 0, passed = g(/@@passed=(\d+)/) || 0;
+      const fail = g(/@@failed=(\d+)/) || 0, skipped = g(/@@skipped=(\d+)/) || 0;
       modsRun++; const allpass = fail === 0 && ran > 0; if (allpass) modsOK++;
       totRan += ran; totPass += passed; totFail += fail; totSkip += skipped;
       const rn = passed + fail, rate = rn ? Math.round(100 * passed / rn) : 100;

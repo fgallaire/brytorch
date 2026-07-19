@@ -22,7 +22,9 @@ let n = 0, bytes = 0;
 
 const EXCLUDE_DIRS = new Set([
   'torch._inductor', 'torch.distributed', 'torch._dynamo', 'torch.onnx',
-  'torch.testing._internal',
+  // testing._internal ships REAL (the official-suite dashboard imports
+  // common_utils/common_device_type); only its distributed subtree stays out
+  'torch.testing._internal.distributed',
   // export/compile infrastructure — out of the v1 slice like dynamo (its
   // import chain also trips a pybind11 holder cast, see PYTORCH_PORT.md)
   'torch.export', 'torch._export', 'torch._higher_order_ops',
@@ -103,6 +105,41 @@ const PATCH = {
              '                value_str = type(value).__format__(value, "")')
     .replace('            ret = f"{value}"',
              '            ret = type(value).__format__(value, "")'),
+  // official-suite dashboard: numpy is OPTIONAL (TEST_NUMPY gates the numpy
+  // paths — pytorch-sanctioned numpy-less runs); cpp_extension pulls
+  // setuptools (absent in the browser) and only serves compiled-extension
+  // tests; the onnx symbolic registrars come from the stub below.
+  'torch.testing._internal.common_utils': (s) => s
+    .replace('import expecttest\nimport numpy as np\n',
+             'import expecttest\n'
+             + 'try:  # wasthon: numpy optional (TEST_NUMPY gates its tests)\n'
+             + '    import numpy as np\n'
+             + 'except ImportError:\n'
+             + '    np = None\n')
+    .replace('numpy_to_torch_dtype_dict = {',
+             'numpy_to_torch_dtype_dict = {} if np is None else {')
+    .replace('from torch.utils import cpp_extension',
+             'try:  # wasthon: cpp_extension needs setuptools (no browser build)\n'
+             + '    from torch.utils import cpp_extension\n'
+             + 'except ImportError:\n'
+             + '    cpp_extension = None')
+    .replace(/platform\.mac_ver\(\)/g,
+             // Brython's platform module (which its own os depends on —
+             // vendoring CPython's creates an os.uname<->platform.uname
+             // cycle) has no mac_ver; CPython's non-Mac return shape
+             'getattr(platform, "mac_ver", lambda: ("", ("", "", ""), ""))()')
+    .replace('    if TEST_NUMPY:\n        np.random.seed(seed)',
+             // NumBry's numpy.random (Cython) cannot initialize while the
+             // torch bridge owns the shared $B hooks (dual-runtime debt);
+             // numpy CORE works — degrade the seed call, not the test run
+             '    if TEST_NUMPY:\n'
+             + '        try:  # wasthon: numpy.random unavailable (dual-runtime debt)\n'
+             + '            np.random.seed(seed)\n'
+             + '        except (AttributeError, ImportError, ModuleNotFoundError):\n'
+             + '            pass'),
+  'torch.testing._internal.common_device_type': (s) => s
+    .replace(/platform\.mac_ver\(\)/g,
+             'getattr(platform, "mac_ver", lambda: ("", ("", "", ""), ""))()'),
   // no shm manager binary in the browser (libshm is stubbed wasm-side)
   'torch': (s) => s
     // _native (out-of-tree override ops) trips on str(FunctionSchema)
@@ -166,6 +203,99 @@ for (const mod of ['torch._inductor', 'torch.distributed', 'torch._dynamo',
 // `rpc` is exposed inline: nn/parallel/distributed.py does
 // `if dist.rpc.is_available():` at module level, and the __getattr__
 // raise would kill the import before the guard gets to say no.
+// name-reporting: the suites reach _inductor from several sites — say WHICH
+scripts['torch._inductor'][1] =
+  '# wasthon v1 stub: subsystem not in this wasm build\n' +
+  'def __getattr__(name):\n' +
+  '    if name == "config":\n' +
+  '        import importlib\n' +
+  '        mod = importlib.import_module("torch._inductor.config")\n' +
+  '        globals()["config"] = mod\n' +
+  '        return mod\n' +
+  '    raise ImportError("torch._inductor is not in this wasm build (v1): attr " + name)\n';
+
+// config flags read (and @patch-ed) by the harness — same inert shape as
+// the dynamo stub's config
+add('torch._inductor.config', [
+  'class _PatchCtx:',
+  '    def __call__(self, fn=None):',
+  '        return fn if fn is not None else self',
+  '    def __enter__(self):',
+  '        return self',
+  '    def __exit__(self, *exc):',
+  '        return False',
+  'def patch(*a, **k):',
+  '    return _PatchCtx()',
+  'def __getattr__(name):',
+  '    return False',
+  ''].join('\n'), false);
+
+// FUNCTIONAL no-op stub: common_utils' TestCase machinery drives dynamo
+// controls around every test (reset / set_stance / config.suppress_errors) —
+// in an eager-only build these are inert, not errors. Unknown attrs still
+// raise WITH the attr name (diagnosis).
+scripts['torch._dynamo'][1] = [
+  '# wasthon v1: no compiler in this build - dynamo controls are inert no-ops',
+  'class _PatchCtx:',
+  '    def __call__(self, fn=None):',
+  '        return fn if fn is not None else self',
+  '    def __enter__(self):',
+  '        return self',
+  '    def __exit__(self, *exc):',
+  '        return False',
+  'class _Config:',
+  '    def __getattr__(self, name):',
+  '        return False',
+  '    def patch(self, *a, **k):',
+  '        return _PatchCtx()',
+  'config = _Config()',
+  'def reset(*a, **k):',
+  '    pass',
+  'def reset_code_caches(*a, **k):',
+  '    pass',
+  'class _Stance:',
+  '    def __call__(self, fn=None):',
+  '        return fn',
+  '    def __enter__(self):',
+  '        return self',
+  '    def __exit__(self, *exc):',
+  '        return False',
+  'def set_stance(*a, **k):',
+  '    return _Stance()',
+  'def is_compiling():',
+  '    return False',
+  'def disable(fn=None, recursive=True, *a, **k):',
+  '    if fn is None:',
+  '        return lambda f: f',
+  '    return fn',
+  'def graph_break():',
+  '    pass',
+  'def mark_dynamic(*a, **k):',
+  '    pass',
+  'def maybe_mark_dynamic(*a, **k):',
+  '    pass',
+  'def mark_static(*a, **k):',
+  '    pass',
+  'class _Exc:',
+  '    class BackendCompilerFailed(RuntimeError):',
+  '        pass',
+  'exc = _Exc()',
+  'def __getattr__(name):',
+  '    raise ImportError("torch._dynamo is not in this wasm build (v1): attr " + name)',
+  ''].join('\n');
+
+// common_utils does `from torch.onnx import register_custom_op_symbolic,
+// unregister_custom_op_symbolic` — symbolic registration is inert without
+// the onnx exporter, so serve them as no-ops on the stub
+scripts['torch.onnx'][1] =
+  '# wasthon v1 stub: subsystem not in this wasm build\n' +
+  'def register_custom_op_symbolic(symbolic_name, symbolic_fn, opset_version):\n' +
+  '    pass\n' +
+  'def unregister_custom_op_symbolic(symbolic_name, opset_version):\n' +
+  '    pass\n' +
+  'def __getattr__(name):\n' +
+  '    raise ImportError("torch.onnx is not in this wasm build (v1)")\n';
+
 scripts['torch.distributed'][1] =
   'def is_available():\n    return False\n' +
   'class _RpcProbe:\n' +
@@ -444,6 +574,19 @@ add('torch._higher_order_ops.invoke_subgraph', [
   'def __getattr__(name):',
   '    raise ImportError("torch._higher_order_ops is not in this wasm build (v1)")',
   ''].join('\n'), false);
+// nn/attention/flex_attention.py imports the HOP pair at module level; a
+// HigherOrderOperator subclass satisfies registration, calling still raises
+// (same shape as the out_dtype stub)
+add('torch._higher_order_ops.flex_attention', [
+  'from torch._ops import HigherOrderOperator',
+  'class _FlexStub(HigherOrderOperator):',
+  '    def __call__(self, *a, **k):',
+  '        raise ImportError("torch._higher_order_ops is not in this wasm build (v1)")',
+  'flex_attention = _FlexStub("flex_attention")',
+  'flex_attention_backward = _FlexStub("flex_attention_backward")',
+  'def __getattr__(name):',
+  '    raise ImportError("torch._higher_order_ops is not in this wasm build (v1): attr " + name)',
+  ''].join('\n'), false);
 add('torch._higher_order_ops.utils', [
   'def _in_hop_compile(*a, **k):',
   '    return False',
@@ -461,31 +604,8 @@ add('torch._higher_order_ops.utils', [
   '    raise ImportError("torch._higher_order_ops is not in this wasm build (v1)")',
   ''].join('\n'), false);
 
-// utils/checkpoint.py hard-imports these two debug helpers (only CALLED
-// inside the checkpoint-debug path, never in the vertical slice)
-add('torch.testing._internal', '', true);
-// _refs/__init__ hard-imports this one helper; replicated verbatim (it is
-// used at runtime by float-precision decomps)
-add('torch.testing._internal.common_dtype', [
-  'import torch',
-  'def highest_precision_float(device):',
-  '    if torch.device(device).type == "mps":',
-  '        return torch.float32',
-  '    return torch.float64',
-  'def highest_precision_complex(device):',
-  '    if torch.device(device).type == "mps":',
-  '        return torch.complex64',
-  '    return torch.complex128',
-  ''].join('\n'), false);
-add('torch.testing._internal.logging_tensor', [
-  'class LoggingTensorMode:',
-  '    def __init__(self, *a, **k):',
-  '        raise ImportError("torch.testing._internal is not in this wasm build (v1)")',
-  'def capture_logs(*a, **k):',
-  '    raise ImportError("torch.testing._internal is not in this wasm build (v1)")',
-  'def capture_logs_with_logging_tensor_mode(*a, **k):',
-  '    raise ImportError("torch.testing._internal is not in this wasm build (v1)")',
-  ''].join('\n'), false);
+// torch.testing._internal ships real (walked above) — the former stubs
+// (package init, common_dtype, logging_tensor) are the genuine modules now.
 
 // jit/_builtins.py does `import torch.distributed.autograd as dist_autograd`
 // then guards on dist_autograd.is_available() — same shape as rpc
@@ -537,6 +657,85 @@ add('pickletools', fs.readFileSync(path.join(HERE, 'vendor', 'pickletools.py'), 
 add('typing_extensions',
     fs.readFileSync(path.join(HERE, 'vendor', 'typing_extensions.py'), 'utf8'),
     false);
+
+// common_utils does `import __main__` (guarded getattr(__main__, '__file__')
+// uses only); Brython only registers __main__ for an unnamed inline script,
+// and the dashboard drives runPythonSource with explicit names
+add('__main__', '# browser: no main script\n', false);
+
+// runpy (vendored CPython, pure): common_device_type imports it at module
+// level; Brython's stdlib bundle does not serve it
+add('runpy',
+    fs.readFileSync(path.join(HERE, 'vendor', 'runpy.py'), 'utf8'),
+    false);
+
+// common_device_type imports GPU_TYPES from the excluded inductor tree
+// (module level); value replicated from torch/_inductor/utils.py:107
+add('torch._inductor.utils', [
+  'GPU_TYPES = ["cuda", "mps", "xpu", "mtia"]',
+  'def __getattr__(name):',
+  '    raise ImportError("torch._inductor is not in this wasm build (v1)")',
+  ''].join('\n'), false);
+
+// autograd/test_logging.py mentions it under `if __name__ == "__main__"` —
+// Brython statically pre-resolves every import in the source, so the module
+// must exist; the eager-build equivalents are the common_utils ones
+add('torch._dynamo.test_case', [
+  'from torch.testing._internal.common_utils import TestCase, run_tests',
+  ''].join('\n'), false);
+
+// two_tensor.py (test_serialization) imports this experimental export marker
+// at module level; it only tags constructors for the excluded export tracer
+add('torch._export.wrappers', [
+  'def mark_subclass_constructor_exportable_experimental(fn):',
+  '    return fn',
+  'def __getattr__(name):',
+  '    raise ImportError("torch._export is not in this wasm build (v1)")',
+  ''].join('\n'), false);
+
+// numpy.fft OVERRIDE (torch_vfs loads after numpy_vfs, so this wins):
+// NumBry's numpy wasm carries no pocketfft C module, and the real
+// numpy/fft/__init__ import dies half-way — while the OpInfo tables
+// (opinfo/definitions/fft.py) reference np.fft.* AT IMPORT TIME. Serve
+// callables that raise at CALL, so the suites import and fft-referencing
+// tests fail/skip honestly.
+add('numpy.fft', [
+  'def _missing(_name):',
+  '    def _fn(*a, **k):',
+  '        raise NotImplementedError("numpy.fft." + _name + " is not in this browser numpy build")',
+  '    _fn.__name__ = _name',
+  '    return _fn',
+  '',
+  'for _name in ("fft", "ifft", "fft2", "ifft2", "fftn", "ifftn",',
+  '              "rfft", "irfft", "rfft2", "irfft2", "rfftn", "irfftn",',
+  '              "hfft", "ihfft", "fftshift", "ifftshift", "fftfreq",',
+  '              "rfftfreq"):',
+  '    globals()[_name] = _missing(_name)',
+  ''].join('\n'), true);
+
+// expecttest (vendored, MIT): common_utils hard-imports it
+add('expecttest',
+    fs.readFileSync(path.join(HERE, 'vendor', 'expecttest.py'), 'utf8'),
+    false);
+
+// The official pytorch suites the dashboard runs, embedded as top-level
+// modules (pytorch CI runs them the same way: `cd test && python test_X.py`).
+const TEST_SUITES = [
+  'test_testing', 'test_indexing', 'test_view_ops', 'test_shape_ops',
+  'test_type_promotion', 'test_sort_and_select', 'test_reductions',
+  'test_serialization', 'test_autograd', 'test_torch',
+];
+for (const t of TEST_SUITES) {
+  add(t, fs.readFileSync(path.join(PT, 'test', t + '.py'), 'utf8'), false);
+}
+// test_autograd imports its sibling package (`from autograd.test_complex
+// import …`); upstream runs with test/ as cwd, we serve it as a VFS package
+add('autograd', '', true);
+for (const f of fs.readdirSync(path.join(PT, 'test', 'autograd'))) {
+  if (!f.endsWith('.py')) continue;
+  add('autograd.' + f.replace(/\.py$/, ''),
+      fs.readFileSync(path.join(PT, 'test', 'autograd', f), 'utf8'), false);
+}
 
 const blob = ';(function(){\nif(typeof __BRYTHON__==="undefined"){throw new Error("load brython.js first")}\n__BRYTHON__.update_VFS(' + JSON.stringify(scripts) + ');\n})();\n';
 fs.mkdirSync(path.join(ROOT, 'build'), { recursive: true });

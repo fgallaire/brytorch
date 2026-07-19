@@ -215,6 +215,19 @@ stage_vfs() {
   node "$HERE/src/gen_torch_vfs.mjs"
 }
 
+# NumBry (numpy-on-Brython, same bridge family) published artifacts — the
+# official-suite dashboard loads the real numpy wasm alongside torch so the
+# numpy-referencing pytorch tests run against real arrays. Fetched, never
+# built here (NumBry's own CI builds them).
+NUMBRY_SITE="${NUMBRY_SITE:-https://fgallaire.github.io/numbry}"
+stage_numbry() {
+  echo "=== numbry: fetch published NumBry artifacts ==="
+  for f in nprnd.mjs nprnd.wasm numpy_vfs.js; do
+    curl -fsSL -o "$HERE/build/$f" "$NUMBRY_SITE/build/$f"
+  done
+  ls -la "$HERE/build/nprnd.mjs" "$HERE/build/nprnd.wasm" "$HERE/build/numpy_vfs.js"
+}
+
 stage_site() {
   echo "=== site: CPython suite dashboard (wasthon-full bundle, from the wasthon clone) ==="
   ( cd "$W" && bash build.sh wasthon-full )
@@ -258,8 +271,8 @@ PYEOF
 
 run() { for s in "$@"; do "stage_${s//-/_}"; done }
 case "${1:-all}" in
-  all) run deps sources aten pack-aten bindings link vfs site ;;
-  ci)  run deps sources unpack-aten bindings link vfs site ;;
+  all) run deps sources aten pack-aten bindings link vfs numbry site ;;
+  ci)  run deps sources unpack-aten bindings link vfs numbry site ;;
   *)   run "$@" ;;
 esac
 echo "=== done ==="

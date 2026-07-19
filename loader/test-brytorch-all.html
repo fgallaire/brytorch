@@ -1,0 +1,465 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>BryTorch — official pytorch suite dashboard</title>
+<script src="brython/brython.js"></script>
+<script src="brython/brython_stdlib.js"></script>
+<!-- VFS blobs load in the module script: numpy first, torch second, so
+     torch's richer stdlib shims (ctypes) win the shared names -->
+<script src="./wasthon-io-write.js"></script>
+<script src="./wasthon-fs.js"></script>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 900px; margin: 2rem auto; padding: 0 1rem; }
+  table { border-collapse: collapse; width: 100%; font-size: 14px; }
+  th, td { padding: 6px 10px; text-align: right; border-bottom: 1px solid #ddd; }
+  th:first-child, td:first-child { text-align: left; }
+  th { background: #f4f4f4; }
+  tr.pending td { color: #999; }
+  tr.running td { color: #04a; }
+  tr.allpass  { background: #e8f6e8; }
+  tr.somefail { background: #fde8e8; }
+  tr.importfail { background: #fff4e0; }
+  td.num { font-variant-numeric: tabular-nums; }
+  .bar { display:inline-block; height:10px; background:#0a0; border-radius:2px; vertical-align:middle; }
+  .barbg { display:inline-block; height:10px; width:80px; background:#eee; border-radius:2px; vertical-align:middle; text-align:left; }
+  #summary { font-size: 1.1rem; margin-top: 1.5rem; font-weight: 600; }
+  code { background:#f0f0f0; padding:0 3px; border-radius:3px; }
+</style>
+</head>
+<body>
+<p style="font-size:0.85em;margin:0 0 1em 0;"><a href="index.html">← back to index</a></p>
+<h1>BryTorch — official pytorch suite dashboard</h1>
+<p style="color:#666;font-size:0.9em;max-width:74ch;">
+  Runs PyTorch 2.14's own test suites (from <code>pytorch/test/</code>, embedded
+  in the VFS with the real <code>torch.testing._internal</code> harness) against
+  the wasm <code>torch._C</code>. Brython + the VFS + the wasm load <b>once</b>
+  and the suites run sequentially in one interpreter. numpy (the NumBry wasm)
+  loads alongside when present — without it the numpy-dependent suites report
+  their import failure honestly. Per-suite detail goes to the browser console.
+</p>
+
+<table id="results">
+  <thead><tr>
+    <th>Suite</th><th>ran</th><th>pass</th><th>fail</th><th>skip</th><th>pass rate</th><th>status</th>
+  </tr></thead>
+  <tbody></tbody>
+</table>
+<div id="summary">⏳ Booting…</div>
+
+<script type="text/x-torch-runner" id="runner">
+import unittest
+
+def run_module(mod):
+    loader = unittest.TestLoader()
+    suite = loader.loadTestsFromModule(mod)
+    res = unittest.TestResult()
+    suite.run(res)
+    ran = res.testsRun
+    fail = len(res.failures) + len(res.errors)
+    skip = len(res.skipped)
+    passed = ran - fail - skip
+    msgs = []
+    for case, tb in (res.failures + res.errors):
+        last = ""
+        for line in tb.splitlines():
+            if line.strip():
+                last = line.strip()
+        msgs.append(case.id().split(".")[-1] + ": " + last[:100])
+    return passed, fail, skip, msgs
+</script>
+
+<script type="module">
+const log = (s) => console.log(s);
+const ALL_MODULES = [
+  'test_testing',
+  'test_indexing',
+  'test_view_ops',
+  'test_shape_ops',
+  'test_type_promotion',
+  'test_sort_and_select',
+  'test_reductions',
+  'test_serialization',
+  'test_torch',
+  // LAST: its import currently aborts the wasm runtime (open front) — keep
+  // the crash from eating the suites after it
+  'test_autograd',
+];
+const only = new URLSearchParams(location.search).get('test');
+const MODULES = only ? [only] : ALL_MODULES;
+
+function init() {
+  const tbody = document.querySelector('#results tbody');
+  for (const m of MODULES) {
+    const tr = document.createElement('tr'); tr.className = 'pending';
+    tr.innerHTML = `<td><a href="test-brytorch-all.html?test=${m}" target="_blank">${m}</a></td>
+      <td class="num">—</td><td class="num">—</td><td class="num">—</td><td class="num">—</td><td>—</td><td>⏳</td>`;
+    tbody.appendChild(tr);
+  }
+}
+function setRow(idx, cls, cells) {
+  const tr = document.querySelector('#results tbody').children[idx]; tr.className = cls;
+  for (let i = 0; i < cells.length; i++) tr.children[i + 1].innerHTML = cells[i];
+}
+init();
+
+const $B = window.__BRYTHON__;
+globalThis.$B = $B; globalThis.__BRYTHON__ = $B; globalThis._b_ = $B.builtins;
+const summary = document.getElementById('summary');
+
+/* npth.wasm ships whole when it fits under GitHub Pages' per-file ceiling;
+   otherwise build.sh split it into parts + a manifest, reassembled here. */
+async function fetchWasm() {
+  const man = await fetch('../build/npth.parts.json')
+    .then(r => r.ok ? r.json() : null).catch(() => null);
+  if (!man) return await (await fetch('../build/npth.wasm')).arrayBuffer();
+  const buf = new Uint8Array(man.total);
+  let off = 0;
+  for (const p of man.parts) {
+    const part = new Uint8Array(await (await fetch('../build/' + p)).arrayBuffer());
+    buf.set(part, off); off += part.length;
+  }
+  return buf.buffer;
+}
+
+async function loadVfs(url, optional) {
+  const r = await fetch(url).catch(() => null);
+  if (!r || !r.ok) { if (optional) return false; throw new Error('VFS fetch failed: ' + url); }
+  (0, eval)(await r.text());
+  return true;
+}
+
+try {
+  summary.textContent = '⏳ Loading VFS…';
+  /* numpy first: on shared stdlib shims (ctypes) the LAST update_VFS wins,
+     and torch's are the richer ones (torch.xpu needs ctypes.byref). */
+  const hasNumpyVfs = await loadVfs('../build/numpy_vfs.js', true);
+  await loadVfs('../build/torch_vfs.js', false);
+  summary.textContent = '⏳ Loading torch wasm…';
+  const wasmBuf = await fetchWasm();
+  const factory = (await import('../build/npth.mjs')).default;
+  const M = await factory({
+    instantiateWasm(imports, done) {
+      WebAssembly.instantiate(wasmBuf, imports).then(r => done(r.instance));
+      return {};
+    }
+  });
+
+  /* numpy (NumBry) initializes FIRST: wasthon_init installs $B-level hooks
+     that close over their runtime — the torch init runs second and re-wins
+     the shared ones, while numpy's Cython support layer keeps the numpy
+     runtime bindings it needs (init order flipped: numpy-after-torch broke
+     every Cython module init: PyObject_GetAttrString 'generator' /
+     'cython_function_or_method'). */
+  let Mnp = null;
+  const RAND_C = {
+    'numpy.random._common':           '_PyInit__common',
+    'numpy.random.bit_generator':     '_PyInit_bit_generator',
+    'numpy.random._bounded_integers': '_PyInit__bounded_integers',
+    'numpy.random._mt19937':          '_PyInit__mt19937',
+    'numpy.random._philox':           '_PyInit__philox',
+    'numpy.random._pcg64':            '_PyInit__pcg64',
+    'numpy.random._sfc64':            '_PyInit__sfc64',
+    'numpy.random._generator':        '_PyInit__generator',
+    'numpy.random.mtrand':            '_PyInit_mtrand',
+  };
+  function makeNpMod(mod_name, pyinit) {
+    if ($B.imported[mod_name] !== undefined) return true;
+    const parts = mod_name.split('.');
+    const parent = parts.slice(0, -1).join('.');
+    const def = Mnp[pyinit]();
+    try { const di = Mnp.wasthon.moduleDefs.get(def); if (di) di.name = mod_name; } catch (e) {}
+    const cmod = Mnp._wasthon_module_create(def);
+    if (cmod === 0) {
+      try {
+        const pe = Mnp.wasthon.pendingException;
+        let msg = '';
+        if (pe) {
+          try { msg = String($B.builtins.repr(Mnp.wasthon.unwrap(pe.exc))) + ' ' + (pe.msg || ''); }
+          catch (e3) { msg = JSON.stringify(pe).slice(0, 200); }
+        }
+        log('np ' + mod_name + ' module_create=0 pendingExc=' + msg);
+      } catch (e2) {}
+      return false;
+    }
+    const m = Mnp.wasthon.handles.get(cmod);
+    $B.imported[mod_name] = m;
+    try { $B.str_dict_set($B.get_dict($B.imported[parent]), parts[parts.length - 1], m); } catch (e) {}
+    return true;
+  }
+
+  /* CPython: PyCFunction.__module__ is a writable getset (m_module); torch
+     stamps __module__='torch' on every _VariableFunctions entry. Installed
+     post-boot (inside brython.js's own init it destabilizes class setup). */
+  for (const c of [$B.builtin_function_or_method, $B.builtin_method]) {
+    $B.set_to_dict(c, '__module__', $B.getset_descriptor.$factory(c, '__module__', [
+      function (self) { return self.$__module__ !== undefined ? self.$__module__ : 'builtins'; },
+      function (self, v) { self.$__module__ = v; }]));
+  }
+  M._wasthon_init();
+  window._twasm = M;
+
+  /* type.__init__ slot: THPVariableMetaType_init chains to
+     PyType_Type.tp_init (CPython type_init is a no-op validation); the
+     bridge struct has NULL there. Install a no-op. */
+  const tpInitIdx = M.addFunction(function (a, b, c) { return 0; }, 'iiii');
+  M.HEAP32[(M.wasthon._typeTypeStructPtr + 20) >> 2] = tpInitIdx;
+
+  /* pybind11 takes (PyObject*)&PyProperty_Type / &PyStaticMethod_Type
+     directly (enum_base::init) — bind the static structs from the page. */
+  const rtw = M.wasthon;
+  for (const [addr, cls] of [[M._wasthon_torch_property_addr(), $B.builtins.property],
+                             [M._wasthon_torch_staticmethod_addr(), $B.builtins.staticmethod]]) {
+    rtw.handles.set(addr, cls);
+    if (rtw.builtinClassForStruct) rtw.builtinClassForStruct.set(addr, cls);
+  }
+
+  try {
+    if (hasNumpyVfs) {
+      const npFactory = (await import('../build/nprnd.mjs')).default;
+      Mnp = await npFactory();
+      Mnp._wasthon_init();
+      if (typeof installWasthonFS === 'function') installWasthonFS(Mnp);
+      log('numpy wasm loaded alongside torch');
+      /* Import numpy AND its Cython C-extension layer (numpy.random) NOW,
+         while numpy's wasthon_init owns the freshly installed $B hooks —
+         the torch init below re-takes them, and any Cython module init that
+         runs after it fails its bootstrap attr lookups ('generator',
+         'cython_function_or_method'). Fully initialized modules keep their
+         own runtime through their trampoline closures. */
+      const origNp = $B.$__import__;
+      $B.$__import__ = function (mod_name) {
+        try {
+          if (mod_name === 'numpy._core._multiarray_umath' && $B.imported[mod_name] === undefined) {
+            makeNpMod(mod_name, '_PyInit__multiarray_umath');
+          } else if (typeof mod_name === 'string' && RAND_C[mod_name] && $B.imported[mod_name] === undefined) {
+            makeNpMod(mod_name, RAND_C[mod_name]);
+          } else if (mod_name === 'numpy.linalg._umath_linalg' && $B.imported[mod_name] === undefined) {
+            makeNpMod(mod_name, '_PyInit__umath_linalg');
+          }
+        } catch (e) { log('np import hook EXC: ' + (e && (e.message || e))); }
+        return origNp.apply(this, arguments);
+      };
+      try {
+        $B.runPythonSource('import numpy\n', 'np_boot');
+        for (const [name, init] of Object.entries(RAND_C)) {
+          try { makeNpMod(name, init); }
+          catch (e) { log('np eager ' + name + ' FAILED: ' + (e && (e.message || e))); }
+        }
+        try { makeNpMod('numpy.linalg._umath_linalg', '_PyInit__umath_linalg'); } catch (e) {}
+        $B.runPythonSource(
+          'import numpy.random as _nr\n' +
+          "print('numpy.random OK, seed present: ' + str(hasattr(_nr, 'seed')))\n", 'np_boot2');
+      } catch (e) {
+        log('numpy preload FAILED: ' + (e && (e.args ? String(e.args[0]) : e.message || e)));
+      }
+    }
+  } catch (e) { log('numpy unavailable: ' + (e && e.message || e)); Mnp = null; }
+
+  const orig = $B.$__import__;
+  function runC(fullname, pyinit) {
+    if ($B.imported[fullname] !== undefined) return true;
+    const parts = fullname.split('.');
+    const parent = parts.slice(0, -1).join('.');
+    if (parent && $B.imported[parent] === undefined) {
+      try { orig(parent, {}, {}, [], 0); } catch (e) {}
+    }
+    if ($B.imported[fullname] !== undefined) return true;
+    log('  [C] init ' + fullname + '…');
+    const def = M[pyinit]();
+    if (def === 0) throw new Error(fullname + ' PyInit returned NULL');
+    let mod = null;
+    try { if (!M.wasthon.moduleDefs.get(def)) mod = M.wasthon.handles.get(def); } catch (e) {}
+    if (!mod) {
+      try { const di = M.wasthon.moduleDefs.get(def); if (di) di.name = fullname; } catch (e) {}
+      const cmod = M._wasthon_module_create(def);
+      if (cmod === 0) throw new Error(fullname + ' init FAILED');
+      mod = M.wasthon.handles.get(cmod);
+    } else {
+      try { $B.str_dict_set($B.get_dict(mod), '__name__', fullname); } catch (e) {}
+    }
+    $B.imported[fullname] = mod;
+    if (parent) {
+      try { $B.str_dict_set($B.get_dict($B.imported[parent]), parts[parts.length - 1], mod); } catch (e) {}
+    }
+    if (fullname === 'torch._C') {
+      /* the C module is a PACKAGE (VFS stubs live under torch._C.*) */
+      try { $B.str_dict_set($B.get_dict(mod), '__path__', $B.$list([])); } catch (e) {}
+      /* v1: torch's C _add_docstr casts handles to C object layouts;
+         docstrings are cosmetic — same semantics, Brython-side. */
+      const addDoc = function (obj, doc) {
+        try { obj.__doc__ = doc; } catch (e) {}
+        try { if (obj.$function_infos && $B.func_attrs) obj.$function_infos[$B.func_attrs.__doc__] = doc; } catch (e) {}
+        return obj;
+      };
+      addDoc.$infos = { __name__: '_add_docstr' };
+      $B.str_dict_set($B.get_dict(mod), '_add_docstr', addDoc);
+    }
+    log('  [C] ' + fullname + ' ready');
+    return true;
+  }
+
+  $B.$__import__ = function (mod_name, globals, locals, fromlist, level) {
+    try {
+      if (mod_name === 'torch._C') runC('torch._C', '_PyInit__C');
+      if (mod_name === 'torch' && fromlist && fromlist.length) {
+        for (const f of fromlist) if (f === '_C') runC('torch._C', '_PyInit__C');
+      }
+      if (Mnp) {
+        if (mod_name === 'numpy._core._multiarray_umath' && $B.imported[mod_name] === undefined) {
+          makeNpMod(mod_name, '_PyInit__multiarray_umath');
+        } else if (typeof mod_name === 'string' && RAND_C[mod_name] && $B.imported[mod_name] === undefined) {
+          try { makeNpMod(mod_name, RAND_C[mod_name]); }
+          catch (e) { log('np C module ' + mod_name + ' FAILED: ' + (e && (e.message || e))); }
+        } else if (mod_name === 'numpy.linalg._umath_linalg' && $B.imported[mod_name] === undefined) {
+          try { makeNpMod(mod_name, '_PyInit__umath_linalg'); }
+          catch (e) { log('np C module ' + mod_name + ' FAILED: ' + (e && (e.message || e))); }
+        }
+      }
+    } catch (e) { log('import hook EXC: ' + (e && e.message || e) + ' || ' + (e && e.stack || '').split('\n').slice(0,3).join(' << ')); }
+    return orig.apply(this, arguments);
+  };
+
+  brython({ debug: 1 });
+
+  summary.textContent = '⏳ Importing torch…';
+  await new Promise(r => setTimeout(r, 60));
+  {
+    let buf = '';
+    const oc = console.log;
+    console.log = (...a) => { buf += a.map(x => typeof x === 'string' ? x : String(x)).join(' ') + '\n'; };
+    try {
+      $B.runPythonSource(
+        "import sys, os\n" +
+        "os.environ['PYTORCH_PRINT_REPRO_ON_FAILURE'] = '0'\n" +
+        "if not hasattr(sys, '_clear_type_descriptors'):\n" +
+        "    sys._clear_type_descriptors = lambda *a, **k: None\n" +
+        "try:\n" +
+        "    import torch\n" +
+        "except BaseException as _e:\n" +
+        "    import traceback, io\n" +
+        "    _c = _e\n" +
+        "    while _c is not None:\n" +
+        "        print('CAUSE: ' + type(_c).__name__ + ': ' + str(_c)[:200])\n" +
+        "        _c = _c.__cause__ or _c.__context__\n" +
+        "    try:\n" +
+        "        from browser import window\n" +
+        "        _src = window.__BRYTHON__.VFS['torch.xpu'][1]\n" +
+        "        _g = {'__name__': 'torch.xpu', '__package__': 'torch.xpu', '__file__': 'torch/xpu/__init__.py'}\n" +
+        "        exec(_src, _g)\n" +
+        "        print('XPU EXEC: no error!?')\n" +
+        "    except BaseException as _e2:\n" +
+        "        _s = io.StringIO()\n" +
+        "        traceback.print_exception(_e2, file=_s)\n" +
+        "        print('XPU EXEC TRACEBACK:')\n" +
+        "        print(_s.getvalue())\n" +
+        "    raise\n" +
+        "print('torch ' + torch.__version__ + ' imported')\n",
+        'brytorch_boot');
+    } catch (e) {
+      console.log = oc;
+      summary.innerHTML = '❌ torch import FAILED: ' + (e && (e.args ? String(e.args[0]) : (e.message || e)));
+      const pre = document.createElement('pre');
+      pre.id = 'bootlog';
+      pre.style.cssText = 'background:#fff0f0;padding:1em;font-size:12px;overflow-x:auto;';
+      pre.textContent = buf;
+      document.body.appendChild(pre);
+      console.error('torch import failed', e, buf);
+      globalThis.__ALL_DONE__ = true;
+      throw e;
+    }
+    console.log = oc;
+    log(buf);
+    const bi = document.createElement('pre');
+    bi.id = 'bootinfo'; bi.style.display = 'none';
+    bi.textContent = buf;
+    document.body.appendChild(bi);
+  }
+
+  const runnerSrc = document.getElementById('runner').textContent;
+  const breathe = () => new Promise(r => setTimeout(r, 60));
+  let totRan = 0, totPass = 0, totFail = 0, totSkip = 0, modsOK = 0, modsRun = 0, importFails = 0;
+
+  for (let i = 0; i < MODULES.length; i++) {
+    const mod = MODULES[i];
+    setRow(i, 'running', ['…', '…', '…', '…', '…', '🔄']);
+    await breathe();
+    const driver = runnerSrc +
+      "\n\ntry:" +
+      "\n    _mod = __import__(" + JSON.stringify(mod) + ", fromlist=[\"_\"])" +
+      "\nexcept BaseException as _e:" +
+      "\n    print(\"IMPORT FAILED: \" + type(_e).__name__ + \": \" + str(_e)[:150])" +
+      "\n    import traceback as _tb, io as _io" +
+      "\n    _sio = _io.StringIO()" +
+      "\n    _tb.print_exception(_e, file=_sio)" +
+      "\n    print(\"IMPORT TRACEBACK:\\n\" + _sio.getvalue())" +
+      "\nelse:" +
+      "\n    _p, _f, _s, _fails = run_module(_mod)" +
+      "\n    print(\"ran=\" + str(_p + _f + _s))" +
+      "\n    print(\"passed=\" + str(_p))" +
+      "\n    print(\"failed+errored=\" + str(_f))" +
+      "\n    print(\"skipped=\" + str(_s))" +
+      "\n    for _m in _fails[:12]:" +
+      "\n        print(\"  FAIL \" + _m)" +
+      "\n";
+    let buf = '';
+    const t0 = performance.now();
+    const oc = console.log;
+    console.log = (...a) => { buf += a.map(x => typeof x === 'string' ? x : String(x)).join(' ') + '\n'; };
+    try { $B.runPythonSource(driver, 'torch_one_' + mod); }
+    catch (e) { buf += '\nMODULE CRASH: ' + (e && (e.args ? String(e.args[0]) : e.message || e)); }
+    finally { console.log = oc; }
+    const secs = ((performance.now() - t0) / 1000).toFixed(1);
+    console.log('=== suite: ' + mod + ' ===\n' + buf + '(' + secs + ' s)');
+    {
+      /* headless harness window: per-suite console detail mirrored into a
+         hidden pre (selenium cannot read the console) */
+      let sl = document.getElementById('suitelogs');
+      if (!sl) {
+        sl = document.createElement('pre'); sl.id = 'suitelogs';
+        sl.style.display = 'none';
+        document.body.appendChild(sl);
+      }
+      sl.textContent += '=== ' + mod + ' (' + secs + 's) ===\n' + buf + '\n';
+    }
+    const g = (re) => { const m = buf.match(re); return m ? parseInt(m[1], 10) : null; };
+    const imp = buf.match(/IMPORT FAILED:\s*(.+)/) ||
+                (buf.indexOf('MODULE CRASH') !== -1 ? [null, buf.split('MODULE CRASH:')[1].trim().slice(0, 120)] : null);
+    if (imp) {
+      importFails++; setRow(i, 'importfail', ['—', '—', '—', '—', '—', '⚠ ' + String(imp[1]).trim().slice(0, 120)]);
+      let lf = document.getElementById('lastfail');
+      if (!lf) {
+        lf = document.createElement('pre'); lf.id = 'lastfail';
+        lf.style.display = 'none';
+        document.body.appendChild(lf);
+      }
+      lf.textContent += '=== ' + mod + ' ===\n' + buf + '\n';
+    } else {
+      const ran = g(/ran\s*=\s*(\d+)/) || 0, passed = g(/passed\s*=\s*(\d+)/) || 0;
+      const fail = g(/failed\+errored\s*=\s*(\d+)/) || 0, skipped = g(/skipped\s*=\s*(\d+)/) || 0;
+      modsRun++; const allpass = fail === 0 && ran > 0; if (allpass) modsOK++;
+      totRan += ran; totPass += passed; totFail += fail; totSkip += skipped;
+      const rn = passed + fail, rate = rn ? Math.round(100 * passed / rn) : 100;
+      const bar = `<span class="barbg"><span class="bar" style="width:${Math.round(0.8 * rate)}px"></span></span> ${rate}%`;
+      setRow(i, allpass ? 'allpass' : 'somefail', [ran, passed, fail, skipped, bar, allpass ? '✓' : '✗ ' + secs + 's']);
+    }
+    const rn = totPass + totFail;
+    summary.innerHTML =
+      `<b>${modsOK}/${modsRun}</b> suites fully green &nbsp;|&nbsp; tests: ` +
+      `<b>${totPass}/${rn}</b> pass (${rn ? Math.round(100 * totPass / rn) : 100}%), ` +
+      `${totFail} fail, ${totSkip} skip` +
+      (importFails ? ` &nbsp;|&nbsp; ${importFails} import-failed` : '') +
+      (i + 1 < MODULES.length ? ' &nbsp;·&nbsp; running…' : '');
+    await breathe();
+  }
+  log('=== GRAND TOTAL (torch) passed=' + totPass + ' failed=' + totFail + ' skipped=' + totSkip + ' ran=' + totRan + ' ===');
+  log('=== done ==='); globalThis.__ALL_DONE__ = true;
+} catch (e) {
+  if (summary && !summary.innerHTML.startsWith('❌')) {
+    summary.innerHTML = '❌ BOOT FAILED: ' + (e && (e.args ? String(e.args[0]) : (e.message || e)));
+  }
+  console.error('BOOT FAILED', e); globalThis.__ALL_DONE__ = true;
+}
+</script>
+</body>
+</html>

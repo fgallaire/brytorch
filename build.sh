@@ -99,7 +99,7 @@ stage_sources() {
   git -C "$PT" submodule update --init --depth 1
   git -C "$PT/third_party/fbgemm" submodule update --init --depth 1 external/asmjit 2>/dev/null || true
   echo "=== sources: apply the port ==="
-  # 1) the two recette-patches (the ONLY C++ edits in 1.1M lines)
+  # 1) the three recette-patches (the ONLY C++ edits in 1.1M lines)
   python3 - "$PT" << 'PYEOF'
 import sys, pathlib
 pt = pathlib.Path(sys.argv[1])

@@ -420,6 +420,12 @@ try {
     }
     console.log = oc;
     log(buf);
+    /* imports settled: opt in to result reclamation (the bridge
+       FinalizationRegistry frees per-call C structs once their wrappers
+       are collected — without it every tensor is immortal: measured
+       +1 handle +1 refcount per tensor, ~100-400 MB per suite). */
+    M.wasthon.reclaimResults = true;
+    if (Mnp) Mnp.wasthon.reclaimResults = true;
     const bi = document.createElement('pre');
     bi.id = 'bootinfo'; bi.style.display = 'none';
     bi.textContent = buf;
@@ -494,6 +500,15 @@ try {
       const heapMB = Math.round(M.HEAPU8.length / 1048576);
       setRow(i, allpass ? 'allpass' : 'somefail', [ran, passed, fail, skipped, bar, (allpass ? '✓' : '✗ ' + secs + 's') + ' · heap ' + heapMB + ' Mo']);
     }
+    /* between-suites reclamation: demoted (wrapper-owned, rc==1)
+       instances proven unreachable from frames+module graphs get their
+       C dealloc — without it the wasm heap grows ~100-400 MB per suite
+       (tensors are immortal; the FinalizationRegistry never fires).
+       Measured: flat 133 MB across repeated 2000-tensor rounds. */
+    try {
+      const freed = $B.$wasthon_reclaim_demoted ? $B.$wasthon_reclaim_demoted() : 0;
+      if (freed) console.log('[reclaim] freed ' + freed + ' demoted instances');
+    } catch (e) {}
     const rn = totPass + totFail;
     summary.innerHTML =
       `<b>${modsOK}/${modsRun}</b> suites fully green &nbsp;|&nbsp; tests: ` +

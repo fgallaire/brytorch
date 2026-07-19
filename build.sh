@@ -201,7 +201,7 @@ stage_link() {
     -Wl,--whole-archive "$BW/lib/libtorch_cpu.a" -Wl,--no-whole-archive \
     "$BW/lib/libc10.a" "$BW/lib/libcpuinfo.a" \
     "$BW/lib/libonnx.a" "$BW/lib/libonnx_proto.a" "$BW/lib/libprotobuf.a" \
-    -s ALLOW_MEMORY_GROWTH=1 -sINITIAL_MEMORY=67108864 -sMAXIMUM_MEMORY=2147483648 -s ALLOW_TABLE_GROWTH=1 -sSTACK_SIZE=5242880 \
+    -sFORCE_FILESYSTEM=1 -s ALLOW_MEMORY_GROWTH=1 -sINITIAL_MEMORY=67108864 -sMAXIMUM_MEMORY=2147483648 -s ALLOW_TABLE_GROWTH=1 -sSTACK_SIZE=5242880 \
     -s EXPORTED_FUNCTIONS='["_PyInit__C","_wasthon_init","_wasthon_module_create","_wasthon_torch_property_addr","_wasthon_torch_staticmethod_addr","_malloc","_free"]' \
     -s EXPORTED_RUNTIME_METHODS='["HEAPU8","HEAP32","HEAPF32","HEAPF64","HEAP16","UTF8ToString","stringToUTF8","lengthBytesUTF8","addFunction"]' \
     -s MODULARIZE=1 -s EXPORT_ES6=1 -s EXPORT_NAME=createTorchModule \

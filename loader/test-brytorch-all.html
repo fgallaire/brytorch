@@ -68,18 +68,28 @@ def _iter_tests(suite):
         else:
             yield t
 
+# Architectural skips: tests whose premise cannot exist in single-threaded
+# wasm (each entry is a PROVEN hang/abort, with its reason)
+WASTHON_SKIPS = {
+    "test_grad_thread_safety": "spawns real threads and joins them - no threads in wasm",
+}
+
 def run_module(mod, k=None):
     loader = unittest.TestLoader()
     suite = loader.loadTestsFromModule(mod)
+    tests = list(_iter_tests(suite))
+    arch_skipped = [t for t in tests if t.id().split(".")[-1] in WASTHON_SKIPS]
+    tests = [t for t in tests if t.id().split(".")[-1] not in WASTHON_SKIPS]
     if k:
         # ?k=substring — pytest-style narrowing so a probe runs seconds,
         # not the whole suite
-        suite = unittest.TestSuite([t for t in _iter_tests(suite) if k in t.id()])
+        tests = [t for t in tests if k in t.id()]
+    suite = unittest.TestSuite(tests)
     res = _TracingResult()
     suite.run(res)
-    ran = res.testsRun
+    ran = res.testsRun + len(arch_skipped)
     fail = len(res.failures) + len(res.errors)
-    skip = len(res.skipped)
+    skip = len(res.skipped) + len(arch_skipped)
     passed = ran - fail - skip
     msgs = []
     hist = {}
@@ -95,9 +105,10 @@ def run_module(mod, k=None):
     for key, n in top:
         msgs.append("CLUSTER x" + str(n) + ": " + key)
     if k and (res.failures or res.errors):
-        # narrowed probe: ship the FIRST full traceback for diagnosis
+        # narrowed probe: ship the FIRST full traceback for diagnosis (FIRST
+        # in the list so the driver's line cap cannot truncate it)
         first = (res.failures + res.errors)[0]
-        msgs.append("FIRST TB:\n" + first[1][-1800:])
+        msgs.insert(0, "FIRST TB:\n" + first[1][-1800:])
     return passed, fail, skip, msgs
 </script>
 

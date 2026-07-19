@@ -50,10 +50,21 @@
 <script type="text/x-torch-runner" id="runner">
 import unittest
 
+class _TracingResult(unittest.TestResult):
+    # the id of the test being entered survives a wasm abort (the page DOM
+    # and JS globals outlive the runtime) — the last one names the killer
+    def startTest(self, test):
+        super().startTest(test)
+        try:
+            from browser import window
+            window.__last_test = test.id()
+        except Exception:
+            pass
+
 def run_module(mod):
     loader = unittest.TestLoader()
     suite = loader.loadTestsFromModule(mod)
-    res = unittest.TestResult()
+    res = _TracingResult()
     suite.run(res)
     ran = res.testsRun
     fail = len(res.failures) + len(res.errors)
@@ -248,10 +259,14 @@ try {
         }
         try { makeNpMod('numpy.linalg._umath_linalg', '_PyInit__umath_linalg'); } catch (e) {}
         $B.runPythonSource(
-          'import numpy.random as _nr\n' +
-          "print('numpy.random OK, seed present: ' + str(hasattr(_nr, 'seed')))\n", 'np_boot2');
+          'from browser import window as _w\n' +
+          'try:\n' +
+          '    import numpy.random as _nr\n' +
+          "    _w.__np_random_state = 'OK' if hasattr(_nr, 'seed') else 'partial'\n" +
+          'except BaseException as _e:\n' +
+          "    _w.__np_random_state = type(_e).__name__ + ': ' + str(_e)[:160]\n", 'np_boot2');
       } catch (e) {
-        log('numpy preload FAILED: ' + (e && (e.args ? String(e.args[0]) : e.message || e)));
+        window.__np_random_state = 'preload EXC: ' + (e && (e.args ? String(e.args[0]) : e.message || e));
       }
     }
   } catch (e) { log('numpy unavailable: ' + (e && e.message || e)); Mnp = null; }

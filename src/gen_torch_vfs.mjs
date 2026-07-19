@@ -152,7 +152,35 @@ const PATCH = {
              + '    import warnings as _w\n'
              + '    _w.warn(f"torch._native disabled (wasm v1): {_native_err}")')
     .replace('def _manager_path() -> bytes:',
-             'def _manager_path() -> bytes:\n    return b""  # wasthon: no shm manager\n\ndef _manager_path_unused() -> bytes:'),
+             'def _manager_path() -> bytes:\n    return b""  # wasthon: no shm manager\n\ndef _manager_path_unused() -> bytes:')
+    // numpy lives in a SIBLING wasm (NumBry) — the C-level tensor<->ndarray
+    // bridge (USE_NUMPY) cannot share memory across the two heaps. Serve
+    // VALUE-COPY equivalents in Python: t.numpy() and torch.from_numpy()
+    // preserve dtype and values; view/aliasing semantics are honestly lost
+    // (tests asserting shared storage fail as they should).
+    + '\n\ntry:  # wasthon: value-copy numpy interop (numpy is a sibling wasm)\n'
+    + '    import numpy as _wasthon_np\n'
+    + 'except ImportError:\n'
+    + '    _wasthon_np = None\n'
+    + 'if _wasthon_np is not None:\n'
+    + '    def _wasthon_tensor_numpy(self, *, force=False):\n'
+    + '        t = self.detach() if self.requires_grad else self\n'
+    + '        if t.is_conj() or t.is_neg():\n'
+    + '            if not force:\n'
+    + '                raise RuntimeError("Cannot call numpy() on Tensor that has conjugate/negative bit set; use resolve_conj()/resolve_neg() or force=True")\n'
+    + '            t = t.resolve_conj().resolve_neg()\n'
+    + '        _np_dt = str(t.dtype).replace("torch.", "")\n'
+    + '        if t.numel() == 0:\n'
+    + '            return _wasthon_np.empty(tuple(t.shape), dtype=_np_dt)\n'
+    + '        return _wasthon_np.array(t.tolist(), dtype=_np_dt)\n'
+    + '    Tensor.numpy = _wasthon_tensor_numpy\n'
+    + '    def _wasthon_torch_dtype(np_dtype):\n'
+    + '        return getattr(sys.modules["torch"], str(_wasthon_np.dtype(np_dtype)))\n'
+    + '    def from_numpy(arr):\n'
+    + '        a = _wasthon_np.asarray(arr)\n'
+    + '        if a.size == 0:\n'
+    + '            return empty(tuple(a.shape), dtype=_wasthon_torch_dtype(a.dtype))\n'
+    + '        return tensor(a.tolist(), dtype=_wasthon_torch_dtype(a.dtype))\n',
 };
 
 function add(mod, src, isInit) {

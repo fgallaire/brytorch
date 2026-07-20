@@ -226,11 +226,20 @@ const PATCH = {
     // ndarray case to the value-copy converter at Python level; the
     // comparison harness (torch.testing._comparison) as_tensor's every
     // numpy input, so this gates most against-numpy tests.
+    // numpy SCALARS (np.generic — np.trace/np.sum results) are foreign
+    // handles too: torch.tensor(np.int64(5)) trapped the same way. Convert
+    // via .item() with the dtype preserved (0-d tensor, like CPython).
+    + '    def _wasthon_scalar_tensor(s, dtype=None):\n'
+    + '        t = _wasthon_c_tensor(s.item(),\n'
+    + '                              dtype=_wasthon_torch_dtype(s.dtype))\n'
+    + '        return t.to(dtype) if dtype is not None else t\n'
     + '    _wasthon_c_as_tensor = as_tensor\n'
     + '    def as_tensor(data, dtype=None, device=None):\n'
     + '        if isinstance(data, _wasthon_np.ndarray):\n'
     + '            t = from_numpy(data)\n'
     + '            return t.to(dtype) if dtype is not None else t\n'
+    + '        if isinstance(data, _wasthon_np.generic):\n'
+    + '            return _wasthon_scalar_tensor(data, dtype)\n'
     + '        return _wasthon_c_as_tensor(data, dtype=dtype, device=device)\n'
     + '    _wasthon_c_tensor = tensor\n'
     + '    def tensor(data, *args, **kw):\n'
@@ -238,6 +247,11 @@ const PATCH = {
     + '            t = from_numpy(data)\n'
     + '            if kw.get("dtype") is not None:\n'
     + '                t = t.to(kw["dtype"])\n'
+    + '            if kw.get("requires_grad"):\n'
+    + '                t.requires_grad_(True)\n'
+    + '            return t\n'
+    + '        if isinstance(data, _wasthon_np.generic):\n'
+    + '            t = _wasthon_scalar_tensor(data, kw.get("dtype"))\n'
     + '            if kw.get("requires_grad"):\n'
     + '                t.requires_grad_(True)\n'
     + '            return t\n'

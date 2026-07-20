@@ -5,22 +5,21 @@ on:
     branches: [main]
   workflow_dispatch:
 
+# Only the deploy job needs Pages write / id-token; the build job just reads
+# the repo (and the ATen Release asset). Splitting the two means a transient
+# Pages-deploy failure is retried on its own — the hours-of-CI build job is
+# NOT re-run (mirrors wasthon's test/deploy split).
 permissions:
   contents: read
-  pages: write
-  id-token: write
 
 concurrency:
   group: pages
   cancel-in-progress: true
 
 jobs:
-  build-deploy:
+  build:
     runs-on: ubuntu-latest
     timeout-minutes: 90
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -35,8 +34,16 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           mkdir -p build
-          gh release download aten-wasm -p 'aten-wasm-*.tar.zst' -D build \
-            -R "$GITHUB_REPOSITORY"
+          # GitHub's release-asset API throws transient 503s ("No server is
+          # currently available"); a single blip shouldn't fail the whole
+          # build job. Retry with backoff, then assert the asset arrived.
+          for i in 1 2 3 4 5 6; do
+            gh release download aten-wasm -p 'aten-wasm-*.tar.zst' -D build \
+              -R "$GITHUB_REPOSITORY" && break
+            echo "ATen download attempt $i failed (transient?); retrying in 20s…"
+            sleep 20
+          done
+          ls build/aten-wasm-*.tar.zst
 
       # Content-hashed compiler cache: pushes that touch neither the
       # binding TUs nor the headers drop the ~25 min compile to ~2 min.
@@ -79,6 +86,16 @@ jobs:
         with:
           path: _site
 
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4

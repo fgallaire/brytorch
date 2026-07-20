@@ -200,7 +200,26 @@ const PATCH = {
     + '        a = _wasthon_np.asarray(arr)\n'
     + '        if a.size == 0:\n'
     + '            return empty(tuple(a.shape), dtype=_wasthon_torch_dtype(a.dtype))\n'
-    + '        return tensor(a.tolist(), dtype=_wasthon_torch_dtype(a.dtype))\n',
+    + '        return tensor(a.tolist(), dtype=_wasthon_torch_dtype(a.dtype))\n'
+    // Tensor-op-ndarray goes through torch's __torch_function__ dispatch
+    // BEFORE the C++ arg parser (which would read the foreign nprnd handle
+    // as npth memory and trap "index out of bounds"). Convert ndarray
+    // operands value-copy for Tensor METHODS (operators dispatch as e.g.
+    // method 'add' of TensorBase); plain torch.* functions keep failing
+    // (NotImplemented -> TypeError), mirroring upstream's open numpy-arg
+    // bug (pytorch#36363) that test_type_promotion encodes.
+    + '    def _wasthon_ndarray_tf(cls, func, types, args=(), kwargs=None):\n'
+    + '        if kwargs is None:\n'
+    + '            kwargs = {}\n'
+    + '        if getattr(func, "__objclass__", None) is None:\n'
+    + '            return NotImplemented\n'
+    + '        def _cv(x):\n'
+    + '            return from_numpy(x) if isinstance(x, _wasthon_np.ndarray) else x\n'
+    + '        return func(*[_cv(x) for x in args], **{k: _cv(v) for k, v in kwargs.items()})\n'
+    + '    try:\n'
+    + '        _wasthon_np.ndarray.__torch_function__ = classmethod(_wasthon_ndarray_tf)\n'
+    + '    except Exception:\n'
+    + '        pass\n',
 };
 
 function add(mod, src, isInit) {

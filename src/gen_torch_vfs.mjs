@@ -219,7 +219,29 @@ const PATCH = {
     + '    try:\n'
     + '        _wasthon_np.ndarray.__torch_function__ = classmethod(_wasthon_ndarray_tf)\n'
     + '    except Exception:\n'
-    + '        pass\n',
+    + '        pass\n'
+    // torch.as_tensor/tensor(ndarray) take the C++ DLPack route — reading
+    // the foreign capsule ACROSS the two wasm heaps yields garbage
+    // ("unsupported DLPack capsule major version: <random>"). Divert the
+    // ndarray case to the value-copy converter at Python level; the
+    // comparison harness (torch.testing._comparison) as_tensor's every
+    // numpy input, so this gates most against-numpy tests.
+    + '    _wasthon_c_as_tensor = as_tensor\n'
+    + '    def as_tensor(data, dtype=None, device=None):\n'
+    + '        if isinstance(data, _wasthon_np.ndarray):\n'
+    + '            t = from_numpy(data)\n'
+    + '            return t.to(dtype) if dtype is not None else t\n'
+    + '        return _wasthon_c_as_tensor(data, dtype=dtype, device=device)\n'
+    + '    _wasthon_c_tensor = tensor\n'
+    + '    def tensor(data, *args, **kw):\n'
+    + '        if isinstance(data, _wasthon_np.ndarray):\n'
+    + '            t = from_numpy(data)\n'
+    + '            if kw.get("dtype") is not None:\n'
+    + '                t = t.to(kw["dtype"])\n'
+    + '            if kw.get("requires_grad"):\n'
+    + '                t.requires_grad_(True)\n'
+    + '            return t\n'
+    + '        return _wasthon_c_tensor(data, *args, **kw)\n',
 };
 
 function add(mod, src, isInit) {

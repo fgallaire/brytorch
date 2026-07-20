@@ -80,6 +80,31 @@ WASTHON_SKIPS = {
         "int64-overflow premise - the offset cannot overflow the same way on wasm32",
     "test_resize_overflow_cpu":
         "overflow caught earlier on wasm32 (numel) - different message by design",
+    # test_testing: these eight spawn a fresh python via subprocess to
+    # inspect import behaviour - no processes (posix.pipe) in the browser
+    "test_filtering_env_var": "subprocess (posix.pipe) - no processes in the browser",
+    "test_lazy_imports_are_lazy": "subprocess (posix.pipe) - no processes in the browser",
+    "test_no_mutate_global_logging_on_import_path_functorch":
+        "subprocess (posix.pipe) - no processes in the browser",
+    "test_no_mutate_global_logging_on_import_path_torch":
+        "subprocess (posix.pipe) - no processes in the browser",
+    "test_no_warning_on_import": "subprocess (posix.pipe) - no processes in the browser",
+    "test_not_import_sympy": "subprocess (posix.pipe) - no processes in the browser",
+    "test_not_import_triton": "subprocess (posix.pipe) - no processes in the browser",
+    "test_setup_and_teardown_run_for_device_specific_tests_cpu":
+        "subprocess (posix.pipe) - no processes in the browser",
+    # test_serialization: >2^31-byte premises - impossible on wasm32
+    "test_serialization_2gb_file": "writes a 2 GB file - exceeds the wasm32 heap by design",
+    "test_serialization_4gb_file": "writes a 4 GB file - exceeds the wasm32 heap by design",
+    "test_serialization_offset": ">2^31-byte storage - alloc_cpu nbytes overflows ptrdiff_t on wasm32",
+    "test_serialization_offset_filelike_weights_only_False":
+        ">2^31-byte storage - alloc_cpu nbytes overflows ptrdiff_t on wasm32",
+    "test_serialization_offset_filelike_weights_only_True":
+        ">2^31-byte storage - alloc_cpu nbytes overflows ptrdiff_t on wasm32",
+    "test_meta_serialization_weights_only_False":
+        ">2^31-element meta tensor - storage-size computation overflows on wasm32",
+    "test_meta_serialization_weights_only_True":
+        ">2^31-element meta tensor - storage-size computation overflows on wasm32",
 }
 # Prefix-matched architectural skips: parametrized families sharing one
 # impossible premise
@@ -92,6 +117,10 @@ WASTHON_SKIP_PREFIXES = {
     # np.nonzero returns intp=int32 indices on wasm; torch returns int64
     "test_nonzero_cpu_":
         "numpy intp is 32-bit on wasm - index dtype can never match torch's int64",
+    # make_tensor's low>=high error path imports torch.distributed (28
+    # dtype-parametrized variants) - distributed is not in the v1 wasm build
+    "test_low_ge_high_":
+        "error path imports torch.distributed - not in the v1 wasm build",
 }
 def _arch_skip(tid):
     name = tid.split(".")[-1]
@@ -302,6 +331,26 @@ try {
   M._wasthon_init();
   window._twasm = M;
   if (typeof installWasthonFS === 'function') installWasthonFS(M);
+
+  /* test fixtures (loader/testdata/, 18 Ko): seed the MEMFS paths the
+     serialization tests resolve. download_file caches under
+     get_writable_path('data') — cu.__file__ is a VFS name so dirname()
+     is '' and the RELATIVE 'data' dir is the cache (existing+writable =
+     cache hit, no network). test_meta_serialized_module opens
+     torch/testing/_internal/data/network*.py relative to
+     dirname(dirname(torch.__file__)) = ''. */
+  try {
+    M.FS.mkdirTree('/data');
+    M.FS.mkdirTree('/torch/testing/_internal/data');
+    for (const [fn, dir] of [['legacy_serialized.pt', '/data'],
+                             ['gpu_tensors.pt', '/data'],
+                             ['legacy_conv2d.pt', '/data'],
+                             ['network1.py', '/torch/testing/_internal/data'],
+                             ['network2.py', '/torch/testing/_internal/data']]) {
+      const r = await fetch('./testdata/' + fn);
+      if (r.ok) M.FS.writeFile(dir + '/' + fn, new Uint8Array(await r.arrayBuffer()));
+    }
+  } catch (e) { console.warn('testdata seed:', e); }
 
   /* type.__init__ slot: THPVariableMetaType_init chains to
      PyType_Type.tp_init (CPython type_init is a no-op validation); the

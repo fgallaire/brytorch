@@ -113,7 +113,19 @@ def run_module(mod, k=None):
 </script>
 
 <script type="module">
-const log = (s) => console.log(s);
+const log = (s) => {
+  console.log(s);
+  /* mirrored into a hidden pre: the headless harness cannot read the
+     console, and the numpy-boot diagnostics only went there */
+  try {
+    let n = document.getElementById('bootlog');
+    if (!n) {
+      n = document.createElement('pre'); n.id = 'bootlog';
+      n.style.display = 'none'; document.body.appendChild(n);
+    }
+    n.textContent += s + '\n';
+  } catch (e) {}
+};
 const ALL_MODULES = [
   'test_testing',
   'test_indexing',
@@ -265,6 +277,7 @@ try {
       const npFactory = (await import('../build/nprnd.mjs')).default;
       Mnp = await npFactory();
       Mnp._wasthon_init();
+      window._npwasm = Mnp;  /* probe access to the numpy runtime */
       if (typeof installWasthonFS === 'function') installWasthonFS(Mnp);
       log('numpy wasm loaded alongside torch');
       /* Import numpy AND its Cython C-extension layer (numpy.random) NOW,

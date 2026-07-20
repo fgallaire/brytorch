@@ -161,6 +161,11 @@ const log = (s) => {
     n.textContent += s + '\n';
   } catch (e) {}
 };
+// The 6 quick suites (each ~1-3 min standalone). The 4 heavy ones —
+// test_view_ops, test_reductions, test_autograd (15-45 min each) and
+// test_torch (fast standalone but heap-hungry: running last in the shared
+// page it inherits ~2 GB of accumulated wasm heap and collects extra
+// MemoryError fails) — are linked individually from index.html via ?test=.
 const ALL_MODULES = [
   'test_testing',
   'test_indexing',
@@ -168,20 +173,25 @@ const ALL_MODULES = [
   'test_type_promotion',
   'test_sort_and_select',
   'test_serialization',
-  'test_torch',
-  'test_autograd',
-  // LAST: the two heap-hungry suites — after ~7500 tests in one page the
-  // wasm heap runs out and whatever imports NEXT aborts; keep the damage
-  // at the tail
-  'test_view_ops',
-  'test_reductions',
 ];
 const params = new URLSearchParams(location.search);
 const only = params.get('test');
 const kFilter = params.get('k');
+/* ?failcap=N — how many failing tests to echo per suite (default 40 keeps
+   the page readable; a harvest run passes a large N for the full census) */
+const failCap = parseInt(params.get('failcap') || '40', 10);
 const MODULES = params.get('probe') ? [] : (only ? [only] : ALL_MODULES);
 
 function init() {
+  /* single-suite view (?test=X): no dashboard table and no cross-suite
+     "N/M suites fully green" aggregate — just the per-test breakdown block
+     below, the way the per-module numbry pages render */
+  if (only) {
+    const t = document.getElementById('results'); if (t) t.style.display = 'none';
+    const s = document.getElementById('summary'); if (s) s.style.display = 'none';
+    document.title = 'BryTorch — ' + only;
+    const h = document.querySelector('h1'); if (h) h.textContent = 'BryTorch — ' + only;
+  }
   const tbody = document.querySelector('#results tbody');
   for (const m of MODULES) {
     const tr = document.createElement('tr'); tr.className = 'pending';
@@ -531,7 +541,7 @@ try {
       "\n    print(\"@@passed=\" + str(_p))" +
       "\n    print(\"@@failed=\" + str(_f))" +
       "\n    print(\"@@skipped=\" + str(_s))" +
-      "\n    for _m in _fails[:40]:" +
+      "\n    for _m in _fails[:" + failCap + "]:" +
       "\n        print(\"  FAIL \" + _m)" +
       "\n";
     let buf = '';
@@ -553,6 +563,20 @@ try {
         document.body.appendChild(sl);
       }
       sl.textContent += '=== ' + mod + ' (' + secs + 's) ===\n' + buf + '\n';
+    }
+    /* single-suite view (?test=X): the table is just one row, so mirror the
+       per-test breakdown — counts + the failing tests — into a VISIBLE block,
+       the way the per-module numbry pages do. */
+    if (only) {
+      let d = document.getElementById('detail');
+      if (!d) {
+        d = document.createElement('pre'); d.id = 'detail';
+        d.style.cssText = 'background:#f4f4f4;padding:1em;font-size:13px;'
+          + 'line-height:1.4;overflow-x:auto;white-space:pre-wrap;';
+        document.body.appendChild(d);
+      }
+      d.textContent += '=== ' + mod + ' (' + secs + 's) ===\n'
+        + buf.replace(/^@@/gm, '') + '\n';
     }
     const g = (re) => { const m = buf.match(re); return m ? parseInt(m[1], 10) : null; };
     const imp = buf.match(/IMPORT FAILED:\s*(.+)/) ||

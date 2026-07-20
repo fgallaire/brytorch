@@ -132,7 +132,7 @@ const ALL_MODULES = [
 const params = new URLSearchParams(location.search);
 const only = params.get('test');
 const kFilter = params.get('k');
-const MODULES = only ? [only] : ALL_MODULES;
+const MODULES = params.get('probe') ? [] : (only ? [only] : ALL_MODULES);
 
 function init() {
   const tbody = document.querySelector('#results tbody');
@@ -435,6 +435,30 @@ try {
   const runnerSrc = document.getElementById('runner').textContent;
   const breathe = () => new Promise(r => setTimeout(r, 60));
   let totRan = 0, totPass = 0, totFail = 0, totSkip = 0, modsOK = 0, modsRun = 0, importFails = 0;
+
+  /* ?probe=<python> — run arbitrary code against the booted torch+numpy
+     runtimes instead of the suites (targeted debugging: seconds, not
+     minutes). Output lands in #suitelogs like a suite's would. */
+  const probeSrc = params.get('probe');
+  if (probeSrc) {
+    let buf = '';
+    const oc = console.log;
+    console.log = (...a) => { buf += a.map(x => typeof x === 'string' ? x : String(x)).join(' ') + '\n'; };
+    try { $B.runPythonSource(probeSrc, 'torch_probe'); }
+    catch (e) {
+      buf += '\nPROBE CRASH: ' + (e && (e.args ? String(e.args[0]) : e.message || e));
+      if (e && e.stack) buf += '\nJS STACK:\n' + e.stack;
+      var je = e && (e.$js_exc || e.js_exc || e.$origin);
+      if (je && je.stack) buf += '\nORIGIN JS STACK:\n' + je.stack;
+    }
+    finally { console.log = oc; }
+    const sl = document.createElement('pre');
+    sl.id = 'suitelogs'; sl.style.display = 'none';
+    sl.textContent = '=== probe ===\n' + buf + '\n';
+    document.body.appendChild(sl);
+    log('=== probe ===\n' + buf);
+    globalThis.__ALL_DONE__ = true;
+  }
 
   for (let i = 0; i < MODULES.length; i++) {
     const mod = MODULES[i];

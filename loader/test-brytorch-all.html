@@ -73,13 +73,30 @@ def _iter_tests(suite):
 WASTHON_SKIPS = {
     "test_grad_thread_safety": "spawns real threads and joins them - no threads in wasm",
 }
+# Prefix-matched architectural skips: parametrized families sharing one
+# impossible premise
+WASTHON_SKIP_PREFIXES = {
+    # np.argsort/np.sort index dtype is numpy's intp = int32 on wasm
+    # (ILP32); torch returns int64 indices and assertEqual compares
+    # dtypes strictly. CPython numpy is LP64 so upstream never sees it.
+    "test_stable_sort_against_numpy_cpu_":
+        "numpy intp is 32-bit on wasm - index dtype can never match torch's int64",
+}
+def _arch_skip(tid):
+    name = tid.split(".")[-1]
+    if name in WASTHON_SKIPS:
+        return True
+    for p in WASTHON_SKIP_PREFIXES:
+        if name.startswith(p):
+            return True
+    return False
 
 def run_module(mod, k=None):
     loader = unittest.TestLoader()
     suite = loader.loadTestsFromModule(mod)
     tests = list(_iter_tests(suite))
-    arch_skipped = [t for t in tests if t.id().split(".")[-1] in WASTHON_SKIPS]
-    tests = [t for t in tests if t.id().split(".")[-1] not in WASTHON_SKIPS]
+    arch_skipped = [t for t in tests if _arch_skip(t.id())]
+    tests = [t for t in tests if not _arch_skip(t.id())]
     if k:
         # ?k=substring — pytest-style narrowing so a probe runs seconds,
         # not the whole suite
@@ -256,6 +273,7 @@ try {
   }
   M._wasthon_init();
   window._twasm = M;
+  if (typeof installWasthonFS === 'function') installWasthonFS(M);
 
   /* type.__init__ slot: THPVariableMetaType_init chains to
      PyType_Type.tp_init (CPython type_init is a no-op validation); the
@@ -278,7 +296,10 @@ try {
       Mnp = await npFactory();
       Mnp._wasthon_init();
       window._npwasm = Mnp;  /* probe access to the numpy runtime */
-      if (typeof installWasthonFS === 'function') installWasthonFS(Mnp);
+      /* FS bridge goes to the TORCH runtime, not numpy's: it patches
+         Brython's posix layer globally (one install per page), and the
+         one that needs Python<->C file sharing is torch (serialization
+         fopen's paths Brython wrote). numpy is pure in-memory VFS. */
       log('numpy wasm loaded alongside torch');
       /* Import numpy AND its Cython C-extension layer (numpy.random) NOW,
          while numpy's wasthon_init owns the freshly installed $B hooks —

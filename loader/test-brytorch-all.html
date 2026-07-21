@@ -91,6 +91,11 @@ WASTHON_SKIPS = {
     "test_no_warning_on_import": "subprocess (posix.pipe) - no processes in the browser",
     "test_not_import_sympy": "subprocess (posix.pipe) - no processes in the browser",
     "test_not_import_triton": "subprocess (posix.pipe) - no processes in the browser",
+    # same intra-op-pool poisoning as test_parallel_cow_materialize_error_*
+    # below: raises the thread count, then bmm's parallel path builds the pool
+    "test_bmm_multithreaded":
+        "multithreaded bmm premise - no threads in wasm, and ATen's failed "
+        "pool init leaves parallel_for permanently asserting",
     "test_serialization_mmap_loading":
         "asserts MAP_SHARED write-back (a store into the mmap'd tensor must "
         "reappear in the file) - MEMFS has no mmap, torch.load(mmap=True) reads a copy",
@@ -131,6 +136,17 @@ WASTHON_SKIP_PREFIXES = {
     # dtype-parametrized variants) - distributed is not in the v1 wasm build
     "test_low_ge_high_":
         "error path imports torch.distributed - not in the v1 wasm build",
+    # POISONS THE WHOLE PAGE, hence a skip rather than a tolerated failure:
+    # it does set_num_threads(10) then launches parallel work, so ATen builds
+    # its intra-op pool; std::thread's ctor cannot succeed in wasm, and the
+    # throw escapes a function-static initializer. C++ retries such an
+    # initializer on the next call, but num_intraop_threads was already
+    # exchanged to CONSUMED, so ParallelNative.cpp:70 asserts "nthreads > 0"
+    # from then on - every later parallel_for in the page dies, including in
+    # other suites, and even set_num_threads(1) cannot recover it.
+    "test_parallel_cow_materialize_error_":
+        "sets 10 threads and launches parallel work - no threads in wasm, and "
+        "ATen's failed pool init leaves parallel_for permanently asserting",
 }
 def _arch_skip(tid):
     name = tid.split(".")[-1]

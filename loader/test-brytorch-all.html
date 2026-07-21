@@ -91,6 +91,16 @@ WASTHON_SKIPS = {
     "test_no_warning_on_import": "subprocess (posix.pipe) - no processes in the browser",
     "test_not_import_sympy": "subprocess (posix.pipe) - no processes in the browser",
     "test_not_import_triton": "subprocess (posix.pipe) - no processes in the browser",
+    "test_serialization_mmap_loading":
+        "asserts MAP_SHARED write-back (a store into the mmap'd tensor must "
+        "reappear in the file) - MEMFS has no mmap, torch.load(mmap=True) reads a copy",
+    "test_serialization_mmap_loading_ctx":
+        "asserts MAP_SHARED write-back (a store into the mmap'd tensor must "
+        "reappear in the file) - MEMFS has no mmap, torch.load(mmap=True) reads a copy",
+    "test_load_njt_weights_only_should_import_False":
+        "subprocess (posix.pipe) - no processes in the browser",
+    "test_load_njt_weights_only_should_import_True":
+        "subprocess (posix.pipe) - no processes in the browser",
     "test_setup_and_teardown_run_for_device_specific_tests_cpu":
         "subprocess (posix.pipe) - no processes in the browser",
     # test_serialization: >2^31-byte premises - impossible on wasm32

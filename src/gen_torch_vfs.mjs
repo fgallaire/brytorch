@@ -36,6 +36,17 @@ const PATCH = {
   // level does `import sympy` (not shipped). Concrete-shape equivalents are
   // exact for the eager build: expect_true is a guard passthrough, sym_eq a
   // structural size compare.
+  // TwoTensor's dispatch imports cond_op only for a `func is cond_op`
+  // identity check — with the higher-order-ops tree out of the v1 slice the
+  // dispatched func can never be cond_op, so the else-branch is exact
+  'torch.testing._internal.two_tensor': (s) => s.replace(
+    '        from torch._higher_order_ops.cond import cond_op\n'
+    + '\n'
+    + '        if func is cond_op:\n'
+    + '            return out\n'
+    + '        else:\n'
+    + '            return return_and_correct_aliasing(func, args, kwargs, out)',
+    '        return return_and_correct_aliasing(func, args, kwargs, out)'),
   'torch.autograd': (s) => s.replace(
     '            from torch.fx.experimental.symbolic_shapes import expect_true, sym_eq',
     '            try:  # wasthon: no sympy — concrete-shape equivalents\n'
@@ -787,6 +798,16 @@ add('torch._C._dynamo.eval_frame', [
 // pickletools: pure stdlib module Brython lacks (torch.package uses it)
 add('pickletools', fs.readFileSync(path.join(HERE, 'vendor', 'pickletools.py'), 'utf8'), false);
 
+// real stdlib zoneinfo (pure-python TZif parser, vendored from CPython —
+// Brython ships none): the weights-only tests pickle ZoneInfo("UTC"); the
+// page seeds its TZif under /usr/share/zoneinfo and points PYTHONTZPATH at it
+for (const [mod, f, isInit] of [
+  ['zoneinfo', 'zoneinfo/__init__.py', true],
+  ['zoneinfo._common', 'zoneinfo/_common.py', false],
+  ['zoneinfo._tzpath', 'zoneinfo/_tzpath.py', false],
+  ['zoneinfo._zoneinfo', 'zoneinfo/_zoneinfo.py', false],
+]) add(mod, fs.readFileSync(path.join(HERE, 'vendor', f), 'utf8'), isInit);
+
 // typing_extensions from the host python (torch imports it everywhere)
 add('typing_extensions',
     fs.readFileSync(path.join(HERE, 'vendor', 'typing_extensions.py'), 'utf8'),
@@ -824,6 +845,14 @@ add('torch._dynamo.utils', [
   'def __getattr__(name):',
   '    raise ImportError("torch._dynamo is not in this wasm build (v1): attr utils." + name)',
   ''].join('\n'), false);
+
+// torch.serialization's fake-tensor paths (skip_data / load-mode tests) do
+// `import torch._dynamo.config` — a plain settings module (os/typing +
+// torch.utils._config_module, none of the dynamo machinery); ship the real
+// file
+add('torch._dynamo.config',
+    fs.readFileSync(path.join(PT, 'torch', '_dynamo', 'config.py'), 'utf8'),
+    false);
 
 // autograd/test_logging.py mentions it under `if __name__ == "__main__"` —
 // Brython statically pre-resolves every import in the source, so the module

@@ -345,11 +345,13 @@ try {
   try {
     M.FS.mkdirTree('/data');
     M.FS.mkdirTree('/torch/testing/_internal/data');
+    M.FS.mkdirTree('/usr/share/zoneinfo');
     for (const [fn, dir] of [['legacy_serialized.pt', '/data'],
                              ['gpu_tensors.pt', '/data'],
                              ['legacy_conv2d.pt', '/data'],
                              ['network1.py', '/torch/testing/_internal/data'],
-                             ['network2.py', '/torch/testing/_internal/data']]) {
+                             ['network2.py', '/torch/testing/_internal/data'],
+                             ['UTC', '/usr/share/zoneinfo']]) {
       const r = await fetch('./testdata/' + fn);
       if (r.ok) M.FS.writeFile(dir + '/' + fn, new Uint8Array(await r.arrayBuffer()));
     }
@@ -496,6 +498,7 @@ try {
       $B.runPythonSource(
         "import sys, os\n" +
         "os.environ['PYTORCH_PRINT_REPRO_ON_FAILURE'] = '0'\n" +
+        "os.environ['PYTHONTZPATH'] = '/usr/share/zoneinfo'\n" +
         "if not hasattr(sys, '_clear_type_descriptors'):\n" +
         "    sys._clear_type_descriptors = lambda *a, **k: None\n" +
         "try:\n" +

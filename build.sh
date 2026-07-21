@@ -231,10 +231,11 @@ stage_vfs() {
 NUMBRY_SITE="${NUMBRY_SITE:-https://fgallaire.github.io/numbry}"
 stage_numbry() {
   echo "=== numbry: fetch published NumBry artifacts ==="
-  for f in nprnd.mjs nprnd.wasm numpy_vfs.js; do
+  for f in nprnd.mjs nprnd.wasm numpy_vfs.js sympy_vfs.js; do
     curl -fsSL -o "$HERE/build/$f" "$NUMBRY_SITE/build/$f"
   done
-  ls -la "$HERE/build/nprnd.mjs" "$HERE/build/nprnd.wasm" "$HERE/build/numpy_vfs.js"
+  ls -la "$HERE/build/nprnd.mjs" "$HERE/build/nprnd.wasm" \
+    "$HERE/build/numpy_vfs.js" "$HERE/build/sympy_vfs.js"
 }
 
 stage_site() {

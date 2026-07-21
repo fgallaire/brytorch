@@ -72,7 +72,8 @@ jobs:
           # NumBry numpy artifacts (fetched by the build's numbry stage) — the
           # dashboard loads them alongside torch; without this copy they 404 and
           # every numpy-dependent suite fails "No module named numpy"
-          cp build/numpy_vfs.js build/nprnd.mjs build/nprnd.wasm _site/build/
+          cp build/numpy_vfs.js build/nprnd.mjs build/nprnd.wasm \
+             build/sympy_vfs.js _site/build/
           # single wasm when it fits under the Pages ceiling, else the parts
           if ls build/npth.wasm.part* >/dev/null 2>&1; then
             cp build/npth.parts.json build/npth.wasm.part* _site/build/

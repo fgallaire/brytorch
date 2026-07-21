@@ -266,6 +266,9 @@ try {
   /* numpy first: on shared stdlib shims (ctypes) the LAST update_VFS wins,
      and torch's are the richer ones (torch.xpu needs ctypes.byref). */
   const hasNumpyVfs = await loadVfs('../build/numpy_vfs.js', true);
+  /* real sympy+mpmath (pure Python, from numbry): torch's symbolic-shapes
+     dependency — the _refs_* reduction variants compile through it */
+  await loadVfs('../build/sympy_vfs.js', true);
   await loadVfs('../build/torch_vfs.js', false);
   summary.textContent = '⏳ Loading torch wasm…';
   const wasmBuf = await fetchWasm();

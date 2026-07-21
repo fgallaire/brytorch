@@ -300,8 +300,23 @@ const PATCH = {
     + '        return _wasthon_c_tensor(data, *args, **kw)\n',
 };
 
+// Every v1 stub raises ImportError from a PEP-562 module __getattr__. A
+// MISSING DUNDER must raise AttributeError instead: getattr(mod, name, default)
+// only swallows AttributeError, and unittest's assertWarns getattr-probes
+// __warningregistry__ on every module in sys.modules — an ImportError there
+// fails any test that merely uses assertWarns, nowhere near the stubbed
+// subsystem. Injected centrally so future stubs inherit it.
+function guardStubDunders(src) {
+  if (!src.includes('is not in this wasm build')) return src;
+  return src.replace(/^def __getattr__\(name\):\n/m,
+    'def __getattr__(name):\n' +
+    '    if name.startswith("__") and name.endswith("__"):\n' +
+    '        raise AttributeError(name)\n');
+}
+
 function add(mod, src, isInit) {
   if (PATCH[mod]) src = PATCH[mod](src);
+  src = guardStubDunders(src);
   scripts[mod] = ['.py', src, [], !!isInit];
   n++; bytes += src.length;
 }
@@ -917,6 +932,12 @@ for (const f of fs.readdirSync(path.join(PT, 'test', 'autograd'))) {
   if (!f.endsWith('.py')) continue;
   add('autograd.' + f.replace(/\.py$/, ''),
       fs.readFileSync(path.join(PT, 'test', 'autograd', f), 'utf8'), false);
+}
+
+// direct scripts[...][1] assignments bypass add(); guard them here too
+for (const k of Object.keys(scripts)) {
+  if (k === '$timestamp') continue;
+  scripts[k][1] = guardStubDunders(scripts[k][1]);
 }
 
 const blob = ';(function(){\nif(typeof __BRYTHON__==="undefined"){throw new Error("load brython.js first")}\n__BRYTHON__.update_VFS(' + JSON.stringify(scripts) + ');\n})();\n';

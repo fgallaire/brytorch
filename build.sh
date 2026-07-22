@@ -99,7 +99,7 @@ stage_sources() {
   git -C "$PT" submodule update --init --depth 1
   git -C "$PT/third_party/fbgemm" submodule update --init --depth 1 external/asmjit 2>/dev/null || true
   echo "=== sources: apply the port ==="
-  # 1) the three recette-patches (the ONLY C++ edits in 1.1M lines)
+  # 1) the four recette-patches (the ONLY C++ edits in 1.1M lines)
   python3 - "$PT" << 'PYEOF'
 import sys, pathlib
 pt = pathlib.Path(sys.argv[1])
@@ -127,6 +127,27 @@ if old in s:
         '// "for pybind"); without it the first Python instance of an interned jit\n'
         '// Type can be cached holder-less and every later holder load throws.\n'
         'PYBIND11_DECLARE_HOLDER_TYPE(T, c10::SingletonOrSharedTypePtr<T>, true)')
+    f.write_text(s)
+f = pt / 'torch/csrc/PyInterpreter.cpp'
+s = f.read_text()
+old = ('    if (overload_name.empty()) {\n'
+       '      return torch_api_function.attr("default").ptr();\n'
+       '    } else {\n'
+       '      return torch_api_function.attr(overload_name.c_str()).ptr();\n'
+       '    }')
+if old in s:
+    s = s.replace(old,
+        '    // The python-op cache keeps this raw pointer forever; a borrowed\n'
+        '    // pointer only stays valid in CPython because torch.ops pins the\n'
+        '    // object. Under the wasthon handle model a borrowed handle dies with\n'
+        '    // its scope, so hand the cache an owned reference (never released).\n'
+        '    if (overload_name.empty()) {\n'
+        '      return py::object(torch_api_function.attr("default")).release().ptr();\n'
+        '    } else {\n'
+        '      return py::object(torch_api_function.attr(overload_name.c_str()))\n'
+        '          .release()\n'
+        '          .ptr();\n'
+        '    }')
     f.write_text(s)
 PYEOF
   # 2) 31 static PyTypeObject initializers -> designated, against wasthon.h

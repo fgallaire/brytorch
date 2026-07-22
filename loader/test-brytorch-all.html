@@ -120,6 +120,21 @@ WASTHON_SKIPS = {
         ">2^31-element meta tensor - storage-size computation overflows on wasm32",
     "test_meta_serialization_weights_only_True":
         ">2^31-element meta tensor - storage-size computation overflows on wasm32",
+    # skip_data() + fake-tensor materialization ride the fake-tensor / compile
+    # infra (torch._higher_order_ops.auto_functionalize, torch._dynamo.source,
+    # torch.fx.experimental.proxy_tensor) — out of the v1 eager slice, like
+    # dynamo/export/distributed. The two "unexpected exception above" ones are
+    # the same cause cascading through the comparison.
+    "test_skip_data_serialization_preserves_views_materialize_fake_True":
+        "fake-tensor materialization needs higher-order-ops/proxy-tensor - out of the v1 eager slice",
+    "test_storage_alignment_load_mode_fake_tensor_mode":
+        "fake_tensor_mode load needs the fake-tensor infra - out of the v1 eager slice",
+    "test_skip_data_load_cpu":
+        "skip_data load path pulls fake-tensor/dynamo infra - out of the v1 eager slice",
+    "test_skip_data_serialization_materialize_fake_False_cpu":
+        "skip_data materialize pulls fake-tensor/dynamo infra - out of the v1 eager slice",
+    "test_skip_data_serialization_materialize_fake_True_cpu":
+        "skip_data materialize needs torch._dynamo.source - out of the v1 eager slice",
 }
 # Prefix-matched architectural skips: parametrized families sharing one
 # impossible premise
@@ -216,18 +231,23 @@ const log = (s) => {
     n.textContent += s + '\n';
   } catch (e) {}
 };
-// The 6 quick suites (each ~1-3 min standalone). The 4 heavy ones —
-// test_view_ops, test_reductions, test_autograd (15-45 min each) and
-// test_torch (fast standalone but heap-hungry: running last in the shared
-// page it inherits ~2 GB of accumulated wasm heap and collects extra
-// MemoryError fails) — are linked individually from index.html via ?test=.
+// The wasm heap never shrinks and a torch tensor is immortal, so each suite
+// runs with less headroom than the one before under npth's 2 GB cap. Only
+// ONE heap-hungry suite fits here: test_serialization leads because it is the
+// SMALLER one (~715 MB), leaving the most room for every suite after it.
+// test_torch (~1.65 GB high-water — the hungriest) is kept OUT, on its own
+// ?test= page (index.html), as are test_reductions / test_autograd.
+// Measured: with test_torch also in the page the heap pins at 2 GB and the
+// following suites start shedding fails non-deterministically
+// (type_promotion 420/0 -> 121), which serialization-in-front avoids.
 const ALL_MODULES = [
+  'test_serialization',
   'test_testing',
   'test_indexing',
   'test_shape_ops',
   'test_type_promotion',
   'test_sort_and_select',
-  'test_serialization',
+  'test_view_ops',
 ];
 const params = new URLSearchParams(location.search);
 const only = params.get('test');
@@ -563,12 +583,19 @@ try {
     }
     console.log = oc;
     log(buf);
-    /* imports settled: opt in to result reclamation (the bridge
-       FinalizationRegistry frees per-call C structs once their wrappers
-       are collected — without it every tensor is immortal: measured
-       +1 handle +1 refcount per tensor, ~100-400 MB per suite). */
-    M.wasthon.reclaimResults = true;
-    if (Mnp) Mnp.wasthon.reclaimResults = true;
+    /* RECLAIM DISABLED (2026-07-22). The inter-suite reclaim freed tensors
+       pybind11 still holds C-side — refs invisible to the Brython refcount —
+       a cross-GC use-after-free that corrupted pybind11's type registry
+       (!types->empty() assert), producing sporadic non-deterministic fails
+       (testing 1-in-2, type_promotion 0-or-121) and the 100%-CPU post-run
+       freeze. Proven by an A/B: assertion present with reclaim, gone
+       without. With test_torch on its own ?test= page, the shared page has a
+       single hungry suite (serialization) so the heap holds without
+       recycling. If torch ever rejoins, the memory answer is iframe
+       isolation (the numbry test-scipy-all.html pattern), NOT this reclaim.
+       Full write-up: DASHBOARD_HEAP_GC.md. */
+    M.wasthon.reclaimResults = false;
+    if (Mnp) Mnp.wasthon.reclaimResults = false;
     const bi = document.createElement('pre');
     bi.id = 'bootinfo'; bi.style.display = 'none';
     bi.textContent = buf;
@@ -679,17 +706,16 @@ try {
       const rn = passed + fail, rate = rn ? Math.round(100 * passed / rn) : 100;
       const bar = `<span class="barbg"><span class="bar" style="width:${Math.round(0.8 * rate)}px"></span></span> ${rate}%`;
       const heapMB = Math.round(M.HEAPU8.length / 1048576);
-      setRow(i, allpass ? 'allpass' : 'somefail', [ran, passed, fail, skipped, bar, (allpass ? '✓' : '✗ ' + secs + 's') + ' · heap ' + heapMB + ' Mo']);
+      /* like the CPython dashboard: surface the first failing test's
+         message in the status cell so a red suite says WHY, not just how
+         many — the full list is still in ?failcap / the single-suite view */
+      const firstFail = allpass ? '' :
+        (buf.match(/^\s*FAIL (.+)$/m) || [null, ''])[1].trim().slice(0, 140);
+      setRow(i, allpass ? 'allpass' : 'somefail', [ran, passed, fail, skipped, bar,
+        (allpass ? '✓' : '✗ ' + secs + 's') + ' · heap ' + heapMB + ' Mo'
+        + (firstFail ? ' · ' + firstFail : '')]);
     }
-    /* between-suites reclamation: demoted (wrapper-owned, rc==1)
-       instances proven unreachable from frames+module graphs get their
-       C dealloc — without it the wasm heap grows ~100-400 MB per suite
-       (tensors are immortal; the FinalizationRegistry never fires).
-       Measured: flat 133 MB across repeated 2000-tensor rounds. */
-    try {
-      const freed = $B.$wasthon_reclaim_demoted ? $B.$wasthon_reclaim_demoted() : 0;
-      if (freed) console.log('[reclaim] freed ' + freed + ' demoted instances');
-    } catch (e) {}
+    /* (no between-suites reclaim — see the RECLAIM DISABLED note above) */
     const rn = totPass + totFail;
     summary.innerHTML =
       `<b>${modsOK}/${modsRun}</b> suites fully green &nbsp;|&nbsp; tests: ` +

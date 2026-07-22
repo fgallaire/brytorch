@@ -250,6 +250,23 @@ const ALL_MODULES = [
   'test_view_ops',
 ];
 const params = new URLSearchParams(location.search);
+/* ?reclaim=dry — census: demotion ON, nothing freed, the bilateral evidence
+   logged between suites (kind / TensorImpl use_count / bytes — wasthon.js).
+   ?reclaim=safe — the bilateral reclaim: real tp_dealloc or nothing, C++-
+   shared tensors skipped, collected wrappers freed via the stamped type. */
+const RECLAIM_MODE = params.get('reclaim');
+const RECLAIM_DRY = !!RECLAIM_MODE;
+/* canary: the v1 corruption signature — count pybind11's registry assert
+   as it hits the console so the harness sees corruption, not just scores */
+globalThis.__CANARY = 0;
+if (RECLAIM_MODE) {
+  const ce = console.error.bind(console);
+  console.error = (...a) => {
+    try { if (String(a[0]).indexOf('types->empty') >= 0) globalThis.__CANARY++; }
+    catch (e) {}
+    ce(...a);
+  };
+}
 const only = params.get('test');
 const kFilter = params.get('k');
 /* ?failcap=N — how many failing tests to echo per suite (default 40 keeps
@@ -594,7 +611,7 @@ try {
        recycling. If torch ever rejoins, the memory answer is iframe
        isolation (the numbry test-scipy-all.html pattern), NOT this reclaim.
        Full write-up: DASHBOARD_HEAP_GC.md. */
-    M.wasthon.reclaimResults = false;
+    M.wasthon.reclaimResults = RECLAIM_DRY;
     if (Mnp) Mnp.wasthon.reclaimResults = false;
     const bi = document.createElement('pre');
     bi.id = 'bootinfo'; bi.style.display = 'none';
@@ -716,6 +733,15 @@ try {
         + (firstFail ? ' · ' + firstFail : '')]);
     }
     /* (no between-suites reclaim — see the RECLAIM DISABLED note above) */
+    if (RECLAIM_MODE) {
+      try {
+        const st = $B.$wasthon_reclaim_demoted(
+          RECLAIM_MODE === 'safe' ? { safe: true } : { dry: true });
+        log('[' + RECLAIM_MODE + '] ' + mod + ' ' + JSON.stringify(st)
+            + ' [canary] ' + globalThis.__CANARY);
+        log('[who] ' + mod + ' ' + JSON.stringify($B.$wasthon_census_live()));
+      } catch (e) { log('[' + RECLAIM_MODE + '] failed: ' + e); }
+    }
     const rn = totPass + totFail;
     summary.innerHTML =
       `<b>${modsOK}/${modsRun}</b> suites fully green &nbsp;|&nbsp; tests: ` +

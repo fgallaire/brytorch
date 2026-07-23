@@ -158,6 +158,12 @@ WASTHON_SKIPS = {
         "a random float32 byte pattern can be a signaling NaN whose payload JS canonicalizes when the scalar crosses a Python float (a JS Number) - the exact bytes cannot round-trip",
     "test_bytes_to_scalar_cpu_complex64":
         "complex64 is two float32 halves - a random NaN payload is canonicalized by JS when it crosses a Python float, so the bytes cannot round-trip",
+    # the numpy bridge is value-copy across the two wasm heaps (nprnd vs npth),
+    # so it can neither share a buffer nor carry a source's writable flag
+    "test_resizable":
+        "x.numpy() must SHARE the buffer to make the storage non-resizable - the value-copy numpy bridge copies across the two wasm heaps, so the storage stays resizable",
+    "test_warn_always_caught_cpu":
+        "torch.from_numpy(non-writable) warns because it SHARES a read-only buffer - the value-copy bridge makes a fresh writable copy, so no non-writable warning is due",
 }
 # Prefix-matched architectural skips: parametrized families sharing one
 # impossible premise

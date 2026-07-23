@@ -302,7 +302,36 @@ const PATCH = {
     + '            if kw.get("requires_grad"):\n'
     + '                t.requires_grad_(True)\n'
     + '            return t\n'
-    + '        return _wasthon_c_tensor(data, *args, **kw)\n',
+    + '        return _wasthon_c_tensor(data, *args, **kw)\n'
+    // torch.Size's slice and concat return Size upstream (THPSize's C++
+    // sequence overrides). Our Size instances are Brython tuples, so the
+    // overrides live at the Python level — the natural layer for a
+    // tuple-backed Size (construction is already correct via the bridge).
+    + '\n\ntry:  # wasthon: torch.Size tuple-op overrides (tuple-backed Size)\n'
+    + '    _wasthon_Size = Size\n'
+    + '    def _wasthon_size_getitem(self, key):\n'
+    + '        r = tuple.__getitem__(self, key)\n'
+    + '        return _wasthon_Size(r) if isinstance(key, slice) else r\n'
+    + '    _wasthon_Size.__getitem__ = _wasthon_size_getitem\n'
+    + '    import collections.abc as _wasthon_abc\n'
+    + '    def _wasthon_size_add(self, other):\n'
+    + '        if isinstance(other, tuple):\n'
+    + '            return _wasthon_Size(tuple.__add__(self, other))\n'
+    + '        if isinstance(other, _wasthon_abc.Sequence):\n'
+    + '            raise TypeError("can only concatenate tuple (not " + type(other).__name__ + ") to torch.Size")\n'
+    + '        return NotImplemented\n'
+    + '    _wasthon_Size.__add__ = _wasthon_size_add\n'
+    + '    def _wasthon_size_radd(self, other):\n'
+    + '        if isinstance(other, tuple):\n'
+    + '            return _wasthon_Size(tuple.__add__(other, self))\n'
+    + '        return NotImplemented\n'
+    + '    _wasthon_Size.__radd__ = _wasthon_size_radd\n'
+    + '    def _wasthon_size_mul(self, n):\n'
+    + '        return _wasthon_Size(list(self) * n)\n'
+    + '    _wasthon_Size.__mul__ = _wasthon_size_mul\n'
+    + '    _wasthon_Size.__rmul__ = _wasthon_size_mul\n'
+    + 'except Exception:\n'
+    + '    pass\n',
 };
 
 // Every v1 stub raises ImportError from a PEP-562 module __getattr__. A

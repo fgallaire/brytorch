@@ -28,10 +28,8 @@
 
 <h2>Test-suite dashboards</h2>
 <ul class="dash">
-  <li><a href="test-brytorch-all.html"><strong>▶ PyTorch suite dashboard</strong></a> — PyTorch's own <code>test/test_*.py</code> (with the real <code>torch.testing._internal</code> harness) against the wasm <code>torch._C</code>: the quick suites in one page. The heap-hungry / long suites run on their own pages:</li>
-  <li class="sub"><a href="test-brytorch-all.html?test=test_torch"><strong>▶ test_torch</strong></a> — the core tensor API (~3 min, needs a fresh heap: ~1.65 GB high-water).</li>
-  <li class="sub"><a href="test-brytorch-all.html?test=test_reductions"><strong>▶ test_reductions</strong></a> — every reduction × every dtype (~20 min).</li>
-  <li class="sub"><a href="test-brytorch-all.html?test=test_autograd"><strong>▶ test_autograd</strong></a> — the autograd engine end to end (30+ min).</li>
+  <li><a href="test-brytorch-all.html"><strong>▶ PyTorch suite dashboard 1/2</strong></a> — PyTorch's own <code>test/test_*.py</code> (with the real <code>torch.testing._internal</code> harness) against the wasm <code>torch._C</code>: <code>test_torch</code> then the quick suites, two iframes so each stage runs on a fresh heap.</li>
+  <li><a href="test-brytorch-all.html?test=test_reductions"><strong>▶ PyTorch suite dashboard 2/2</strong></a> — the long suites, same two-iframe scheme: <code>test_autograd</code> + half of <code>test_reductions</code>, then the other half.</li>
   <li><a href="test-cpython-all.html"><strong>▶ CPython suite dashboard</strong></a> — CPython's own <code>Lib/test/test_*.py</code> against the Wasthon bridge stack BryTorch runs on (the authoritative behavioural reference).</li>
 </ul>
 

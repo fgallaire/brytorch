@@ -15,6 +15,7 @@
   th, td { padding: 6px 10px; text-align: right; border-bottom: 1px solid #ddd; }
   th:first-child, td:first-child { text-align: left; }
   th { background: #f4f4f4; }
+  tr.group td { background: #eef3f8; font-weight: 600; text-align: left; color: #234; }
   tr.pending td { color: #999; }
   tr.running td { color: #04a; }
   tr.allpass  { background: #e8f6e8; }
@@ -172,7 +173,7 @@ def _arch_skip(tid):
             return True
     return False
 
-def run_module(mod, k=None):
+def run_module(mod, k=None, part=None, nparts=None):
     loader = unittest.TestLoader()
     suite = loader.loadTestsFromModule(mod)
     tests = list(_iter_tests(suite))
@@ -182,6 +183,17 @@ def run_module(mod, k=None):
         # ?k=substring — pytest-style narrowing so a probe runs seconds,
         # not the whole suite
         tests = [t for t in tests if k in t.id()]
+    if part and nparts:
+        # ?part=i/n — one slice of the suite, for a suite whose heap climbs
+        # WITHIN itself (test_reductions exhausts the 2 GB cap partway
+        # through its ~4700 tests, then everything behind the failed
+        # allocation cascades). Round-robin, not a contiguous cut: the tests
+        # are grouped by class and dtype, so consecutive blocks are wildly
+        # unequal in cost while every n-th test samples the whole suite.
+        # arch_skipped stays whole on part 1 so the totals still add up.
+        tests = tests[part - 1::nparts]
+        if part != 1:
+            arch_skipped = []
     suite = unittest.TestSuite(tests)
     res = _TracingResult()
     suite.run(res)
@@ -272,7 +284,47 @@ const kFilter = params.get('k');
 /* ?failcap=N — how many failing tests to echo per suite (default 40 keeps
    the page readable; a harvest run passes a large N for the full census) */
 const failCap = parseInt(params.get('failcap') || '40', 10);
-const MODULES = params.get('probe') ? [] : (only ? [only] : ALL_MODULES);
+/* ?run=long1 / long2 — the long-suite page's two stages. autograd rides
+   along with reductions' first half so the page costs two wasm boots
+   (~86 MB each) instead of three. ?part applies to the split suite only. */
+const LONG = { long1: ['test_autograd', 'test_reductions'], long2: ['test_reductions'] };
+const runGroup = params.get('run');
+const MODULES = params.get('probe') ? []
+  : (only ? [only] : (LONG[runGroup] || ALL_MODULES));
+/* Two roles for this one page:
+   - ORCHESTRATOR (no ?test / ?probe / ?run): boots nothing itself, runs the
+     stages below in hidden iframes and aggregates their tables.
+   - RUNNER (?test=X, ?probe=…, or ?run=all): what it has always been.
+   The split exists because a wasm heap grows and never shrinks: destroying
+   an iframe returns its WHOLE memory to the browser, which is the only real
+   free we have. Two stages, not one per suite — the torch wasm is ~86 MB
+   plus a 27 MB VFS, so a boot costs ~15-20 s and only test_torch (~1.65 GB
+   high-water) truly needs a heap of its own; the rest fit together. */
+/* ?part=i&nparts=n — this page runs slice i of n of a single suite.
+   Two params, no slash: Brython derives its own paths from the page URL,
+   and a '/' inside the query string breaks module resolution (the import
+   of torch itself fails with "No active exception to reraise"). */
+const PART = (() => {
+  const i = parseInt(params.get('part') || '', 10);
+  const n = parseInt(params.get('nparts') || '', 10);
+  return i > 0 && n > 0 ? [i, n] : null;
+})();
+/* Suites whose heap climbs WITHIN themselves past the 2 GB cap: an iframe
+   per suite is not enough, so ?test=<suite> orchestrates N slices of it,
+   each in its own iframe. (test_reductions exhausts the cap partway through
+   its ~4700 tests; everything behind the failed allocation then cascades.) */
+const SPLIT = { test_reductions: 2 };
+const SPLIT_ME = only && SPLIT[only] && !PART && !runGroup ? SPLIT[only] : 0;
+const IS_RUNNER = !SPLIT_ME && !!(only || params.get('probe') || runGroup);
+const STAGES = SPLIT_ME
+  ? [
+      { label: 'test_autograd + test_reductions ½', src: 'test-brytorch-all.html?run=long1&part=1&nparts=2' },
+      { label: 'test_reductions ½', src: 'test-brytorch-all.html?run=long2&part=2&nparts=2' },
+    ]
+  : [
+      { label: 'test_torch', src: 'test-brytorch-all.html?test=test_torch' },
+      { label: 'the quick suites', src: 'test-brytorch-all.html?run=all' },
+    ];
 
 function init() {
   /* single-suite view (?test=X): no dashboard table and no cross-suite
@@ -296,7 +348,83 @@ function setRow(idx, cls, cells) {
   const tr = document.querySelector('#results tbody').children[idx]; tr.className = cls;
   for (let i = 0; i < cells.length; i++) tr.children[i + 1].innerHTML = cells[i];
 }
-init();
+if (IS_RUNNER) init();
+
+/* ---- orchestrator role ------------------------------------------------ */
+async function runStages() {
+  const tbody = document.querySelector('#results tbody');
+  const summary = document.getElementById('summary');
+  /* this page IS dashboard 1/2 (the quick suites) or 2/2 (the long ones),
+     matching the index; the two stages below are its heap-isolated frames */
+  const which = SPLIT_ME ? '2/2' : '1/2';
+  document.title = 'BryTorch — dashboard ' + which;
+  { const h = document.querySelector('h1');
+    if (h) h.textContent = 'BryTorch — dashboard ' + which; }
+  const tot = { ran: 0, pass: 0, fail: 0, skip: 0, suites: 0, green: 0 };
+  let frozen = '';
+  const groupRow = (label, note) =>
+    `<tr class="group"><td colspan="7">${label}${note ? ' — ' + note : ''}</td></tr>`;
+  const childRows = (doc) => {
+    let html = '';
+    for (const tr of doc.querySelectorAll('#results tbody tr')) {
+      html += '<tr class="' + tr.className + '">' + tr.innerHTML + '</tr>';
+    }
+    return html;
+  };
+  const render = (tail) => {
+    const runnable = tot.pass + tot.fail;
+    summary.innerHTML =
+      `<b>${tot.green}/${tot.suites}</b> suites fully green &nbsp;|&nbsp; tests: ` +
+      `<b>${tot.pass}/${runnable}</b> pass (${runnable ? Math.round(100 * tot.pass / runnable) : 100}%), ` +
+      `${tot.fail} fail, ${tot.skip} skip` + (tail || '');
+  };
+  for (let s = 0; s < STAGES.length; s++) {
+    const stage = STAGES[s];
+    tbody.innerHTML = frozen + groupRow(stage.label, 'booting…');
+    const iframe = document.createElement('iframe');
+    iframe.style.display = 'none';
+    iframe.src = stage.src + (RECLAIM_MODE ? '&reclaim=' + RECLAIM_MODE : '');
+    document.body.appendChild(iframe);
+    const doc = await new Promise(resolve => {
+      const poll = setInterval(() => {
+        let d = null, done = false;
+        try { d = iframe.contentDocument; done = !!iframe.contentWindow.__ALL_DONE__; }
+        catch (_) { return; }                       // still navigating
+        if (d) {
+          tbody.innerHTML = frozen + groupRow(stage.label, 'running…') + childRows(d);
+          render(' &nbsp;·&nbsp; ' + stage.label + ' running…');
+        }
+        if (done) { clearInterval(poll); clearTimeout(timer); resolve(d); }
+      }, 2000);
+      const timer = setTimeout(() => {
+        clearInterval(poll);
+        let d = null; try { d = iframe.contentDocument; } catch (_) {}
+        resolve(d);
+      }, 45 * 60 * 1000);
+    });
+    let rows = '', peak = 0;
+    if (doc) {
+      rows = childRows(doc);
+      for (const tr of doc.querySelectorAll('#results tbody tr')) {
+        const c = tr.children;
+        if (!c[1] || (c[1].textContent || '').trim() === '—') continue;
+        const n = (i) => { const v = parseInt((c[i].textContent || '').trim(), 10); return isNaN(v) ? 0 : v; };
+        tot.ran += n(1); tot.pass += n(2); tot.fail += n(3); tot.skip += n(4);
+        tot.suites++; if (tr.className === 'allpass') tot.green++;
+      }
+      for (const m of (doc.body.textContent || '').matchAll(/heap (\d+) Mo/g)) {
+        peak = Math.max(peak, parseInt(m[1], 10));
+      }
+    }
+    /* The peak is per-stage on purpose: it leaves with the iframe. */
+    frozen += groupRow(stage.label, peak ? `peak heap ${peak} Mo, released with the iframe` : 'done') + rows;
+    tbody.innerHTML = frozen;
+    try { document.body.removeChild(iframe); } catch (_) {}
+    render(s + 1 < STAGES.length ? ' &nbsp;·&nbsp; next stage booting…' : '');
+  }
+  render('');
+  globalThis.__ALL_DONE__ = true;
+}
 
 const $B = window.__BRYTHON__;
 globalThis.$B = $B; globalThis.__BRYTHON__ = $B; globalThis._b_ = $B.builtins;
@@ -324,7 +452,9 @@ async function loadVfs(url, optional) {
   return true;
 }
 
-try {
+/* orchestrator: never touches the VFS or the wasm — the iframes do */
+if (!IS_RUNNER) runStages();
+else try {
   summary.textContent = '⏳ Loading VFS…';
   /* numpy first: on shared stdlib shims (ctypes) the LAST update_VFS wins,
      and torch's are the richer ones (torch.xpu needs ctypes.byref). */
@@ -651,6 +781,21 @@ try {
     const mod = MODULES[i];
     setRow(i, 'running', ['…', '…', '…', '…', '…', '🔄']);
     await breathe();
+    /* Allocator state BEFORE the suite, to pair with the one after. The
+       heap figure alone can only ever grow (wasm never shrinks), so a
+       suite that leaves it unchanged has recycled everything it touched
+       — but that says nothing about who holds the bytes already there.
+       used/free do: `used` falling across a suite means the PREVIOUS
+       suite's bytes were released while this one ran. */
+    const mi = () => {
+      try {
+        return M['_wasthon_census_mallinfo']
+          ? [Math.round(M['_wasthon_census_mallinfo'](1) / 1048576),
+             Math.round(M['_wasthon_census_mallinfo'](0) / 1048576)]
+          : null;
+      } catch (e) { return null; }
+    };
+    const miBefore = mi();
     const driver = runnerSrc +
       "\n\ntry:" +
       "\n    _mod = __import__(" + JSON.stringify(mod) + ", fromlist=[\"_\"])" +
@@ -661,7 +806,9 @@ try {
       "\n    _tb.print_exception(_e, file=_sio)" +
       "\n    print(\"IMPORT TRACEBACK:\\n\" + _sio.getvalue())" +
       "\nelse:" +
-      "\n    _p, _f, _s, _fails = run_module(_mod, " + (kFilter ? JSON.stringify(kFilter) : "None") + ")" +
+      "\n    _p, _f, _s, _fails = run_module(_mod, " + (kFilter ? JSON.stringify(kFilter) : "None") +
+      ", " + (PART && SPLIT[mod] ? PART[0] : "None") +
+      ", " + (PART && SPLIT[mod] ? PART[1] : "None") + ")" +
       "\n    print(\"@@ran=\" + str(_p + _f + _s))" +
       "\n    print(\"@@passed=\" + str(_p))" +
       "\n    print(\"@@failed=\" + str(_f))" +
@@ -723,13 +870,16 @@ try {
       const rn = passed + fail, rate = rn ? Math.round(100 * passed / rn) : 100;
       const bar = `<span class="barbg"><span class="bar" style="width:${Math.round(0.8 * rate)}px"></span></span> ${rate}%`;
       const heapMB = Math.round(M.HEAPU8.length / 1048576);
+      const miAfter = mi();
+      const miTxt = (miBefore && miAfter)
+        ? ` · used ${miBefore[0]}→${miAfter[0]} Mo, free ${miBefore[1]}→${miAfter[1]} Mo` : '';
       /* like the CPython dashboard: surface the first failing test's
          message in the status cell so a red suite says WHY, not just how
          many — the full list is still in ?failcap / the single-suite view */
       const firstFail = allpass ? '' :
         (buf.match(/^\s*FAIL (.+)$/m) || [null, ''])[1].trim().slice(0, 140);
       setRow(i, allpass ? 'allpass' : 'somefail', [ran, passed, fail, skipped, bar,
-        (allpass ? '✓' : '✗ ' + secs + 's') + ' · heap ' + heapMB + ' Mo'
+        (allpass ? '✓' : '✗ ' + secs + 's') + ' · heap ' + heapMB + ' Mo' + miTxt
         + (firstFail ? ' · ' + firstFail : '')]);
     }
     /* (no between-suites reclaim — see the RECLAIM DISABLED note above) */

@@ -136,6 +136,28 @@ WASTHON_SKIPS = {
         "skip_data materialize pulls fake-tensor/dynamo infra - out of the v1 eager slice",
     "test_skip_data_serialization_materialize_fake_True_cpu":
         "skip_data materialize needs torch._dynamo.source - out of the v1 eager slice",
+    # test_torch: platform-impossible premises (no processes, no compiled
+    # subsystems, wasm32 ILP32 overflow, no mmap, JS NaN canonicalization)
+    "test_RNG_after_pickle":
+        "forks a subprocess to check RNG state survives pickle across processes - no multiprocessing in the browser",
+    "test_terminate_handler_on_crash":
+        "spawns a subprocess (posix.pipe) to capture the C++ terminate handler - no processes in the browser",
+    "test_tolist_with_grad_cpu":
+        "tolist on a grad tensor routes through torch._dynamo - not in the v1 wasm build",
+    "test_qengine":
+        "selects a quantized engine - the quantization backend is not compiled into the v1 wasm build",
+    "test_empty_meta":
+        "meta tensor of 2**20 x 2**20 - the 2**40-element storage-size calc overflows on wasm32 (ILP32) by design",
+    "test_upsample_nearest1d_meta":
+        "meta upsample storage-size calc overflows on wasm32 (ILP32) by design",
+    "test_from_file":
+        "FloatStorage.from_file(shared=True) needs a real mmap'd shared file - MEMFS has none, the mapping reads uninitialized data",
+    "test_torch_from_file":
+        "torch.from_file(shared=True) needs a real mmap'd shared file - MEMFS has none",
+    "test_bytes_to_scalar_cpu_float32":
+        "a random float32 byte pattern can be a signaling NaN whose payload JS canonicalizes when the scalar crosses a Python float (a JS Number) - the exact bytes cannot round-trip",
+    "test_bytes_to_scalar_cpu_complex64":
+        "complex64 is two float32 halves - a random NaN payload is canonicalized by JS when it crosses a Python float, so the bytes cannot round-trip",
 }
 # Prefix-matched architectural skips: parametrized families sharing one
 # impossible premise

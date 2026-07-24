@@ -286,6 +286,49 @@ int _PyEval_SliceIndex(PyObject *v, Py_ssize_t *pi) {
  * pokes values through the bridge's pre-publish tuple mutability. --- */
 const char * const PyStructSequence_UnnamedField = "unnamed field";
 
+/* Upstream installs returned_structseq_repr (torch/csrc/utils/structseq.cpp)
+ * as tp_repr on every return type: the type's FULL dotted name, a newline
+ * after the paren, one "field=value" per line. A collections.namedtuple prints
+ * its short name on one line instead, so the faithful repr is installed HERE,
+ * where this shim mints the type — not downstream in torch's own Python, which
+ * would leave any other consumer of the shim with the namedtuple repr.
+ * Built once through builtins.exec so it is a REAL Python function: it has to
+ * bind `self`, and a PyCFunction sitting in a class dict does not. */
+static PyObject *structseq_repr_func(void) {
+    static PyObject *cached = NULL;
+    if (cached != NULL) return cached;
+    PyObject *builtins = PyImport_ImportModule("builtins");
+    if (!builtins) { PyErr_Clear(); return NULL; }
+    PyObject *ns = PyDict_New();
+    if (!ns) { Py_DECREF(builtins); PyErr_Clear(); return NULL; }
+    const char *src =
+        "def _wasthon_structseq_repr(self):\n"
+        "    c = type(self)\n"
+        "    n = getattr(c, '_wasthon_sq_name', None) or c.__name__\n"
+        "    b = ',\\n'.join('%s=%r' % (k, v) for k, v in zip(c._fields, self))\n"
+        "    return n + '(\\n' + b + ')'\n";
+    PyObject *r = PyObject_CallMethod(builtins, "exec", "sO", src, ns);
+    Py_XDECREF(r);
+    PyObject *fn = PyDict_GetItemString(ns, "_wasthon_structseq_repr"); /* borrowed */
+    if (fn) { Py_INCREF(fn); cached = fn; }
+    PyErr_Clear();
+    Py_DECREF(ns);
+    Py_DECREF(builtins);
+    return cached;
+}
+
+static void structseq_install_repr(PyObject *t, const char *full_name) {
+    PyObject *fn = structseq_repr_func();
+    if (!fn) { PyErr_Clear(); return; }
+    PyObject *full = PyUnicode_FromString(full_name);
+    if (full) {
+        PyObject_SetAttrString(t, "_wasthon_sq_name", full);
+        Py_DECREF(full);
+    }
+    PyObject_SetAttrString(t, "__repr__", fn);
+    PyErr_Clear();   /* a repr we could not install is cosmetic, never fatal */
+}
+
 static PyObject *structseq_make_type(PyStructSequence_Desc *desc) {
     PyObject *collections = PyImport_ImportModule("collections");
     if (!collections) return NULL;
@@ -304,6 +347,7 @@ static PyObject *structseq_make_type(PyStructSequence_Desc *desc) {
     }
     PyObject *t = PyObject_CallMethod(collections, "namedtuple", "sO",
                                       dot ? dot + 1 : desc->name, fields);
+    if (t) structseq_install_repr(t, desc->name);
     return t;
 }
 

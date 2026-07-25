@@ -49,12 +49,24 @@ double wasthon_census_tensor(PyObject* o, int what) {
 // report grad (see NOTE [ PyObject Traversal ] in python_variable.cpp), because
 // CPython gets that liveness from the refcount instead, which we do not have.
 // So the bridge asks here, for REACHABILITY ONLY. `i` selects a fixed slot
-// (0 = grad, 1 = grad_fn); null just means that slot is empty, so the caller
-// walks the whole small range. Read-only, borrows, mutates nothing.
+// (0 = grad, 1 = grad_fn, 2 = storage); null just means that slot is empty, so
+// the caller walks the whole small range. Read-only, borrows, mutates nothing.
 PyObject* wasthon_census_edge(PyObject* o, int i) {
   if (!THPVariable_Check(o)) return nullptr;
   const auto& v = THPVariable_Unpack(o);
   if (!v.defined()) return nullptr;
+  // Slot 2 is the storage's wrapper, and it comes before the autograd lookup
+  // because a plain tensor has a storage and no metadata. Same shape and same
+  // reason as grad: `a.untyped_storage()` is an accessor, and the object it
+  // hands back is remembered in the StorageImpl's pyobj_slot rather than in
+  // any Python attribute of `a`, so a walk of the tensor sees nothing while
+  // the C++ keeps that wrapper alive — which is what
+  // test_storage_dealloc_resurrected asserts by putting a tracker on it and
+  // deleting the only Python name.
+  if (i == 2) {
+    if (!v.has_storage()) return nullptr;
+    return v.storage().unsafeGetStorageImpl()->pyobj_slot()->load_pyobj();
+  }
   auto* meta = torch::autograd::impl::get_autograd_meta(v);
   if (!meta) return nullptr;
   switch (i) {

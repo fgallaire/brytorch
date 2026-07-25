@@ -320,23 +320,30 @@ const PATCH = {
     + '        if isinstance(data, _wasthon_np.generic):\n'
     + '            return _wasthon_scalar_tensor(data, dtype)\n'
     + '        return _wasthon_c_as_tensor(data, dtype=dtype, device=device)\n'
+    // `data` stays in *args rather than being a named parameter: torch.tensor()
+    // with no argument must reach the C so IT reports the missing one. Naming
+    // it made Brython answer first with its own def-signature wording
+    // ("missing 1 required positional argument: 'data'"), where torch writes
+    // "missing 1 required positional arguments" — plural even for one, and the
+    // suite matches that string verbatim.
     + '    _wasthon_c_tensor = tensor\n'
-    + '    def tensor(data, *args, **kw):\n'
+    + '    def tensor(*args, **kw):\n'
     + '        if kw.get("dtype") is not None:\n'
     + '            kw["dtype"] = _wasthon_fix_dtype(kw["dtype"])\n'
-    + '        if isinstance(data, _wasthon_np.ndarray):\n'
+    + '        data = args[0] if args else None\n'
+    + '        if args and isinstance(data, _wasthon_np.ndarray):\n'
     + '            t = from_numpy(data)\n'
     + '            if kw.get("dtype") is not None:\n'
     + '                t = t.to(kw["dtype"])\n'
     + '            if kw.get("requires_grad"):\n'
     + '                t.requires_grad_(True)\n'
     + '            return t\n'
-    + '        if isinstance(data, _wasthon_np.generic):\n'
+    + '        if args and isinstance(data, _wasthon_np.generic):\n'
     + '            t = _wasthon_scalar_tensor(data, kw.get("dtype"))\n'
     + '            if kw.get("requires_grad"):\n'
     + '                t.requires_grad_(True)\n'
     + '            return t\n'
-    + '        return _wasthon_c_tensor(data, *args, **kw)\n'
+    + '        return _wasthon_c_tensor(*args, **kw)\n'
     // Tensor.new is the LEGACY constructor: it never goes through
     // __torch_function__, so the ndarray handler above never sees it and the
     // raw foreign array reaches legacy_tensor_generic_ctor_new, which reads it

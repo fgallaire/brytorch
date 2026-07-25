@@ -152,9 +152,6 @@ int PyFrame_GetLineNumber(PyFrameObject *frame);
 PyObject *PyEval_GetFrameLocals(void);
 PyObject *PyEval_GetFrameGlobals(void);
 PyObject *PyCode_GetVarnames(PyCodeObject *code);
-int PyErr_WarnExplicit(PyObject *category, const char *message,
-                       const char *filename, int lineno,
-                       const char *module, PyObject *registry);
 
 /* --- free-threading probe (3.14): no-op single-thread --- */
 static inline void PyUnstable_EnableTryIncRef(PyObject *obj) { (void)obj; }

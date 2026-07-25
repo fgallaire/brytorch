@@ -260,12 +260,6 @@ PyFrameObject *PyEval_GetFrame(void) { return NULL; }
 PyObject *PyEval_GetFrameLocals(void) { return PyDict_New(); }
 PyObject *PyEval_GetFrameGlobals(void) { return PyDict_New(); }
 PyObject *PyCode_GetVarnames(PyCodeObject *code) { (void)code; return PyTuple_New(0); }
-int PyErr_WarnExplicit(PyObject *category, const char *message,
-                       const char *filename, int lineno,
-                       const char *module, PyObject *registry) {
-    (void)filename; (void)lineno; (void)module; (void)registry;
-    return PyErr_WarnEx(category, message, 1);
-}
 int _PyEval_SliceIndex(PyObject *v, Py_ssize_t *pi) {
     if (!v || v == Py_None) return 1;
     if (!PyIndex_Check(v)) {

@@ -303,6 +303,20 @@ const PATCH = {
     + '                t.requires_grad_(True)\n'
     + '            return t\n'
     + '        return _wasthon_c_tensor(data, *args, **kw)\n'
+    // Tensor.new is the LEGACY constructor: it never goes through
+    // __torch_function__, so the ndarray handler above never sees it and the
+    // raw foreign array reaches legacy_tensor_generic_ctor_new, which reads it
+    // across the two wasm heaps ("not a storage", or an out-of-bounds read
+    // depending on the layout). Upstream treats an array argument as DATA
+    // (`x.new(np.array((3, 4)))` is `[3, 4]` in x's dtype), and that is exactly
+    // what handing over `.tolist()` gives — same value-copy boundary the
+    // tensor()/as_tensor() wrappers above already use.
+    + '    _wasthon_c_tensor_new = Tensor.new\n'
+    + '    def _wasthon_tensor_new(self, *a, **kw):\n'
+    + '        if a and isinstance(a[0], _wasthon_np.ndarray):\n'
+    + '            a = (a[0].tolist(),) + a[1:]\n'
+    + '        return _wasthon_c_tensor_new(self, *a, **kw)\n'
+    + '    Tensor.new = _wasthon_tensor_new\n'
     // torch.Size's slice and concat return Size upstream (THPSize's C++
     // sequence overrides). Our Size instances are Brython tuples, so the
     // overrides live at the Python level — the natural layer for a

@@ -164,6 +164,15 @@ WASTHON_SKIPS = {
         "x.numpy() must SHARE the buffer to make the storage non-resizable - the value-copy numpy bridge copies across the two wasm heaps, so the storage stays resizable",
     "test_warn_always_caught_cpu":
         "torch.from_numpy(non-writable) warns because it SHARES a read-only buffer - the value-copy bridge makes a fresh writable copy, so no non-writable warning is due",
+    # 64-bit-only arithmetic: the test picks storage_offset = 0x41414141, so a
+    # 1-element float32 tensor needs (0x41414141 + 1) * 4 = 4 379 182 344 bytes
+    # - past 2**32. On wasm32 the size computation overflows, so ATen raises
+    # "Storage size calculation overflowed" BEFORE reaching the "out of bounds
+    # for storage of size" the test matches on. Our error is the correct one
+    # for the architecture; and the next line asks for that same ~4.4 GB
+    # storage to be really allocated, against a 2 GB wasm cap.
+    "test_tensor_set_errors":
+        "storage_offset 0x41414141 needs 4.4 GB: on wasm32 the size math overflows first, so ATen raises the overflow error instead of the out-of-bounds one, and the next line would allocate past the 2 GB cap",
 }
 # Prefix-matched architectural skips: parametrized families sharing one
 # impossible premise

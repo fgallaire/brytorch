@@ -249,7 +249,7 @@ stage_link() {
     "$BW/lib/libc10.a" "$BW/lib/libcpuinfo.a" \
     "$BW/lib/libonnx.a" "$BW/lib/libonnx_proto.a" "$BW/lib/libprotobuf.a" \
     -sFORCE_FILESYSTEM=1 -s ALLOW_MEMORY_GROWTH=1 -sINITIAL_MEMORY=67108864 -sMAXIMUM_MEMORY=2147483648 -s ALLOW_TABLE_GROWTH=1 -sSTACK_SIZE=5242880 \
-    -s EXPORTED_FUNCTIONS='["_PyInit__C","_wasthon_init","_wasthon_module_create","_wasthon_torch_property_addr","_wasthon_torch_staticmethod_addr","_wasthon_census_kind","_wasthon_census_tensor","_wasthon_census_mallinfo","_malloc","_free"]' \
+    -s EXPORTED_FUNCTIONS='["_PyInit__C","_wasthon_init","_wasthon_module_create","_wasthon_torch_property_addr","_wasthon_torch_staticmethod_addr","_wasthon_census_kind","_wasthon_census_tensor","_wasthon_census_mallinfo","_wasthon_census_edge","_malloc","_free"]' \
     -s EXPORTED_RUNTIME_METHODS='["HEAPU8","HEAP32","HEAPF32","HEAPF64","HEAP16","UTF8ToString","stringToUTF8","lengthBytesUTF8","addFunction","FS"]' \
     -s MODULARIZE=1 -s EXPORT_ES6=1 -s EXPORT_NAME=createTorchModule \
     -o "$HERE/build/npth.mjs"

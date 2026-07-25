@@ -225,17 +225,51 @@ const PATCH = {
     // BEFORE the C++ arg parser (which would read the foreign nprnd handle
     // as npth memory and trap "index out of bounds"). Convert ndarray
     // operands value-copy for Tensor METHODS (operators dispatch as e.g.
-    // method 'add' of TensorBase); plain torch.* functions keep failing
-    // (NotImplemented -> TypeError), mirroring upstream's open numpy-arg
-    // bug (pytorch#36363) that test_type_promotion encodes.
+    // method 'add' of TensorBase).
+    // Upstream ndarray has NO __torch_function__ at all, so a plain torch.*
+    // call reaches the C++ parser, which ACCEPTS a 0-d integer array in a
+    // size / int-list position (it only asks for __index__) and REJECTS it
+    // wherever a Tensor is expected. Reproduce the accepting half by handing
+    // the C the int it would have read itself — the same value-copy boundary
+    // the tensor()/from_numpy() diversions already cross — and leave the
+    // rejecting half to NotImplemented -> TypeError, upstream's open
+    // numpy-arg outcome (pytorch#36363) that test_type_promotion encodes.
+    // A Tensor anywhere in the call means the ndarray is an operand, not a
+    // size, so that case stays NotImplemented (the promotion test passes 1-d
+    // arrays, which have no __index__ either way).
+    + '    class _wasthon_not_an_index(Exception):\n'
+    + '        pass\n'
+    + '    def _wasthon_np_index(x):\n'
+    + '        if not isinstance(x, _wasthon_np.ndarray):\n'
+    + '            return x\n'
+    + '        if x.ndim != 0 or x.dtype.kind not in "iu":\n'
+    + '            raise _wasthon_not_an_index\n'
+    + '        return x.__index__()\n'
+    + '    def _wasthon_np_size_arg(x):\n'
+    + '        if isinstance(x, (list, tuple)):\n'
+    + '            return type(x)([_wasthon_np_index(y) for y in x])\n'
+    + '        return _wasthon_np_index(x)\n'
     + '    def _wasthon_ndarray_tf(cls, func, types, args=(), kwargs=None):\n'
     + '        if kwargs is None:\n'
     + '            kwargs = {}\n'
-    + '        if getattr(func, "__objclass__", None) is None:\n'
-    + '            return NotImplemented\n'
     + '        def _cv(x):\n'
     + '            return from_numpy(x) if isinstance(x, _wasthon_np.ndarray) else x\n'
-    + '        return func(*[_cv(x) for x in args], **{k: _cv(v) for k, v in kwargs.items()})\n'
+    + '        if getattr(func, "__objclass__", None) is not None:\n'
+    + '            return func(*[_cv(x) for x in args],\n'
+    + '                        **{k: _cv(v) for k, v in kwargs.items()})\n'
+    + '        flat = list(args) + list(kwargs.values())\n'
+    + '        flat += [y for x in flat if isinstance(x, (list, tuple)) for y in x]\n'
+    // NB: `any` in torch/__init__.py is torch.any, not the builtin.
+    + '        for x in flat:\n'
+    + '            if isinstance(x, Tensor):\n'
+    + '                return NotImplemented\n'
+    + '        try:\n'
+    + '            size_args = [_wasthon_np_size_arg(x) for x in args]\n'
+    + '            size_kwargs = {k: _wasthon_np_size_arg(v) for k, v in kwargs.items()}\n'
+    + '        except _wasthon_not_an_index:\n'
+    + '            return NotImplemented\n'
+    + '        with _C.DisableTorchFunctionSubclass():\n'
+    + '            return func(*size_args, **size_kwargs)\n'
     + '    try:\n'
     + '        _wasthon_np.ndarray.__torch_function__ = classmethod(_wasthon_ndarray_tf)\n'
     + '    except Exception:\n'

@@ -99,7 +99,7 @@ stage_sources() {
   git -C "$PT" submodule update --init --depth 1
   git -C "$PT/third_party/fbgemm" submodule update --init --depth 1 external/asmjit 2>/dev/null || true
   echo "=== sources: apply the port ==="
-  # 1) the four recette-patches (the ONLY C++ edits in 1.1M lines)
+  # 1) the five recette-patches (the ONLY C++ edits in 1.1M lines)
   python3 - "$PT" << 'PYEOF'
 import sys, pathlib
 pt = pathlib.Path(sys.argv[1])
@@ -148,6 +148,31 @@ if old in s:
         '          .release()\n'
         '          .ptr();\n'
         '    }')
+    f.write_text(s)
+f = pt / 'torch/csrc/utils/python_arg_parser.cpp'
+s = f.read_text()
+old = ('  if (check_has_torch_function(obj, /*ignore_mode*/ true) &&\n'
+       '      !THPVariable_Check(obj)) {')
+if old in s:
+    # Upstream compiles WITH numpy, so the parser knows ndarray natively
+    # (is_numpy_scalar inside THPUtils_checkScalar, tensor_from_numpy) and an
+    # ndarray never carries __torch_function__. Our numpy is a SIBLING wasm
+    # with its own heap, USE_NUMPY is off, and the port substitutes
+    # ndarray.__torch_function__ for it — which this generic "unrelated object
+    # with __torch_function__" catch-all then accepts for ANY parameter,
+    # int-list included. torch.ones(np.array(3), np.int64(4)) died there: the
+    # array alone satisfied `size`, so the second argument became an extra
+    # positional ("takes 1 positional argument but 2 were given"). Upstream
+    # reads a size through __index__ and never consults __torch_function__ for
+    # it, so let int-lists do the same. Dispatch is NOT lost: an overloaded
+    # object in a size slot is still appended by is_int_or_symint_list, both
+    # from the varargs probe and from the sequence walk.
+    s = s.replace(old,
+        '  if (check_has_torch_function(obj, /*ignore_mode*/ true) &&\n'
+        '      !THPVariable_Check(obj) &&\n'
+        '      /* brytorch: no USE_NUMPY — see build.sh recette-patch */\n'
+        '      type_ != ParameterType::INT_LIST &&\n'
+        '      type_ != ParameterType::SYM_INT_LIST) {')
     f.write_text(s)
 PYEOF
   # 2) 31 static PyTypeObject initializers -> designated, against wasthon.h

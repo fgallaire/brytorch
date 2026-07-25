@@ -267,16 +267,16 @@ const PATCH = {
     + '            return _wasthon_pydt.get(d, d)\n'
     + '        except TypeError:\n'
     + '            return d\n'
-    + '    _wasthon_c_arange = arange\n'
-    + '    def arange(*a, **kw):\n'
-    + '        if kw.get("dtype") is not None:\n'
-    + '            kw["dtype"] = _wasthon_fix_dtype(kw["dtype"])\n'
-    + '        return _wasthon_c_arange(*a, **kw)\n'
-    + '    _wasthon_c_randn = randn\n'
-    + '    def randn(*a, **kw):\n'
-    + '        if kw.get("dtype") is not None:\n'
-    + '            kw["dtype"] = _wasthon_fix_dtype(kw["dtype"])\n'
-    + '        return _wasthon_c_randn(*a, **kw)\n'
+    // arange/randn needed no wrapper any more: the bridge now hands the C the
+    // canonical &PyFloat_Type / &PyLong_Type for the Python `float` / `int`
+    // objects, so toScalarType maps them on its own (measured). Keeping the
+    // wrappers had a cost that is not obvious: a Python frame in front of the C
+    // call STEALS the attribution of any warning the C++ raises — PyErr_WarnEx
+    // blames its caller, so torch's out= warning pointed at torch/__init__.py
+    // instead of the user's line (test_cpp_warnings_have_python_context).
+    // Only dtype=bool / dtype=complex still miss the mapping, and arange
+    // rejects both anyway ("arange_cpu not implemented for Bool"), so the sole
+    // difference is which error type comes back.
     + '    _wasthon_c_as_tensor = as_tensor\n'
     + '    def as_tensor(data, dtype=None, device=None):\n'
     + '        dtype = _wasthon_fix_dtype(dtype)\n'

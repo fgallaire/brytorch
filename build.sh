@@ -174,6 +174,42 @@ if old in s:
         '      type_ != ParameterType::INT_LIST &&\n'
         '      type_ != ParameterType::SYM_INT_LIST) {')
     f.write_text(s)
+# The one PYTHON-side recette-patch: give two unnamed temporaries a name and a
+# `del`. Upstream relies on the refcount to drop a view the moment its
+# expression ends; the port has no refcount, `del` is what releases, and an
+# unnamed temporary never gets one (releasing at frame exit is unsound — the
+# return value is in flight and the enclosing expression's intermediates live in
+# compiled-JS locals; measured, see BUG_torch_dealloc_cluster.md). So each view
+# here keeps t's TensorImpl alive forever and _use_count reads one too high,
+# which is exactly what swap_tensors' own check_use_count refuses. Naming them
+# changes no semantics: both are dead at the `del` in CPython too.
+f = pt / 'torch/autograd/graph.py'
+s = f.read_text()
+orig = s
+old = ('        with torch.enable_grad():\n'
+       '            node = t.view_as(t).grad_fn.next_functions[0][0]'
+       '  # type: ignore[union-attr]')
+if old in s:
+    s = s.replace(old,
+        '        with torch.enable_grad():\n'
+        '            # brytorch: name the temporary so `del` can release it\n'
+        '            _view = t.view_as(t)\n'
+        '            _gfn = _view.grad_fn\n'
+        '            node = _gfn.next_functions[0][0]  # type: ignore[union-attr]\n'
+        '            del _gfn\n'
+        '            del _view')
+old = ('        with torch.enable_grad():\n'
+       '            token = tensor.view_as(tensor).grad_fn')
+if old in s:
+    s = s.replace(old,
+        '        with torch.enable_grad():\n'
+        '            # brytorch: same, the ownership token is the grad_fn and\n'
+        '            # the view it came from must not outlive this line\n'
+        '            _tview = tensor.view_as(tensor)\n'
+        '            token = _tview.grad_fn\n'
+        '            del _tview')
+if s != orig:
+    f.write_text(s)
 PYEOF
   # 2) 31 static PyTypeObject initializers -> designated, against wasthon.h
   ( cd "$PT" && python3 "$HERE/src/torchconvert.py" "$W/src/wasthon.h" \

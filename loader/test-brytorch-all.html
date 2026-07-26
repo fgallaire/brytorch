@@ -52,15 +52,78 @@
 import unittest
 
 class _TracingResult(unittest.TestResult):
+    # ⚠ Every window attribute below is named WITHOUT a leading double
+    # underscore on purpose. Python mangles `__name` inside a class body —
+    # including in an ATTRIBUTE reference — so `window.__peak_t` compiled to
+    # `window._TracingResult__peak_t` and the page read a property nothing
+    # ever wrote. The probe ran, threw nothing, and reported nothing.
     # the id of the test being entered survives a wasm abort (the page DOM
     # and JS globals outlive the runtime) — the last one names the killer
     def startTest(self, test):
         super().startTest(test)
         try:
             from browser import window
-            window.__last_test = test.id()
+            window.wtLastTest = test.id()
         except Exception:
             pass
+
+    # Per-test memory sampling. The module-level before/after mallinfo pair is
+    # an END SNAPSHOT, not a peak: a solo run stops right after the greedy test
+    # and shows its 936 MB, while the same test inside a 586-test slice is
+    # measured 400 tests later and reads far lower. Comparing those numbers
+    # across runs of different lengths is meaningless — which is exactly how a
+    # day of bisection ended up hunting "hogs" by hand. Sample after every test
+    # and keep the maximum WITH the name that reached it: one run then says
+    # what a dichotomy took a dozen runs to find.
+    def stopTest(self, test):
+        super().stopTest(test)
+        # Track BOTH heaps: torch's allocator (mallinfo uordblks) and numpy's
+        # wasm memory size. A test can leave torch untouched and still fill
+        # nprnd to its 2 GB ceiling — test_histogramdd does exactly that
+        # (torch 108 MB, numpy 2026 MB), and a torch-only probe is blind to it.
+        # Errors are recorded rather than swallowed: a silent except here cost
+        # a whole round of hand bisection that this was meant to replace.
+        try:
+            from browser import window
+            t_used = 0
+            try:
+                t_used = window._twasm._wasthon_census_mallinfo(1)
+            except Exception as e:
+                window.wtPeakErr = 'torch: ' + str(e)[:80]
+            n_used = 0
+            try:
+                if window._npwasm is not None:
+                    n_used = window._npwasm.HEAP32.length * 4
+            except Exception as e:
+                window.wtPeakErr = 'numpy: ' + str(e)[:80]
+            if t_used > (window.wtPeakT or 0):
+                window.wtPeakT = t_used
+                window.wtPeakTTest = test.id()
+            if n_used > (window.wtPeakN or 0):
+                window.wtPeakN = n_used
+                window.wtPeakNTest = test.id()
+            # ★ The MAXIMUM is not the culprit. Nothing is reclaimed inside a
+            # frame, so `used` only climbs and its max is reached near the END:
+            # "peak @ test" names where the ceiling was hit, not who allocated.
+            # It was a real attribution on test_histogramdd only because the
+            # neighbours were FLAT (18 MB, then 2026 MB). What identifies the
+            # allocator is the largest RISE between two consecutive samples.
+            t_prev = window.wtPrevT or 0
+            n_prev = window.wtPrevN or 0
+            if t_prev and t_used - t_prev > (window.wtJumpT or 0):
+                window.wtJumpT = t_used - t_prev
+                window.wtJumpTTest = test.id()
+            if n_prev and n_used - n_prev > (window.wtJumpN or 0):
+                window.wtJumpN = n_used - n_prev
+                window.wtJumpNTest = test.id()
+            window.wtPrevT = t_used
+            window.wtPrevN = n_used
+        except Exception as e:
+            try:
+                from browser import window as _w
+                _w.wtPeakErr = 'outer: ' + str(e)[:80]
+            except Exception:
+                pass
 
 def _iter_tests(suite):
     for t in suite:
@@ -75,8 +138,86 @@ WASTHON_SKIPS = {
     "test_grad_thread_safety": "spawns real threads and joins them - no threads in wasm",
     "test_index_put_accumulate_large_tensor_cpu":
         "allocates a >2^31-byte tensor by design - nbytes overflows ptrdiff_t on wasm32",
-    "test_unravel_index_errors_cpu": "needs sympy (not ported)",
-    "test_broadcast_shapes_cpu": "needs sympy (not ported)",
+    # Each of these allocates ~1.7 GB and PASSES on its own — measured, both
+    # variants identically (17 tests, 0 fail, used 39->1777 MB, ~49 s each).
+    # They only fail together, and only in that order: the bridge frees nothing
+    # between two tests, so whichever runs first keeps its 1.7 GB and the
+    # second has no room left in the 2 GB wasm heap. CPython reclaims between
+    # the two and runs both. Not a computation bug — the direct price of the
+    # missing reclaim, and the only reason a whole tail of the suite used to
+    # cascade behind them.
+    "test_sum_noncontig_lowp_cpu_bfloat16":
+        "two 1.7 GB tests back to back, nothing reclaimed between them - 2 GB wasm heap",
+    "test_sum_noncontig_lowp_cpu_float16":
+        "two 1.7 GB tests back to back, nothing reclaimed between them - 2 GB wasm heap",
+    # Same story one step further: with the two above skipped, these two reach
+    # their own peak and fail on the identical alloc_cpu enforce, taking the
+    # whole var_*/warn_* family down behind them. There is no single culprit —
+    # a family of reductions each want ~1-2 GB and nothing is reclaimed between
+    # them, so whichever runs first wins the heap.
+    "test_var_dim_cpu":
+        "~GB-scale reduction, nothing reclaimed between tests - 2 GB wasm heap",
+    "test_var_mean_cpu":
+        "~GB-scale reduction, nothing reclaimed between tests - 2 GB wasm heap",
+    # Same helper, third call site. _test_dim_ops (test_reductions.py:834) is
+    # ONE expensive routine shared by sum_dim / mean_dim / std_dim / var_dim:
+    # 12 blocks x 2 (unbiased), tensors of (5, 400000), (100000,) and
+    # (50, 50, 50) for four axes, and every one of them copied to numpy at
+    # line 844 (`tensor.cpu().numpy()`) — which is why it fills BOTH heaps.
+    # Measured alone: 936 MB of torch and 437 MB of numpy, 214 s, and it PASSES.
+    # It is the largest single contributor of the second half.
+    "test_std_dim_cpu":
+        "936 MB torch + 437 MB numpy on its own (_test_dim_ops copies every tensor to numpy)",
+    # The fourth caller of the same helper, and the most expensive of them all:
+    # the per-test RISE probe measures +897 MB of torch and +347 MB of numpy
+    # for this single test — the largest jump anywhere in the suite. It PASSES,
+    # and it caused no failure of its own; it is skipped because 900 MB out of
+    # 2048 is what stands between the legitimate tests and a single frame.
+    # (The fifth caller, test_sum_dim, is @slowTest and never reaches us.)
+    "test_mean_dim_cpu":
+        "+897 MB torch and +347 MB numpy in one test - the largest single allocation of the suite",
+    # The last memory-caused failure of test_reductions, and both allocator and
+    # victim: it adds 226 MB to numpy and 163 MB to torch, then asks for 8 MiB
+    # more and is refused. Figures are the RISE it causes, not the heap level
+    # it happens to sit at: the level depends on everything that ran before it
+    # and changes with the slicing, the rise is a property of the test.
+    "test_sum_parallel_cpu":
+        "adds 226 MB to numpy and 163 MB to torch, then numpy refuses it a further 8 MiB",
+    # And the same in the middle of the suite, except this one starves the
+    # OTHER heap: torch sits at 778 MB of a 1277 MB heap — plenty free — while
+    # numpy cannot get its array (_ArrayMemoryError). Two wasm runtimes share
+    # the page, each with its own 2 GB ceiling, and this test's working set
+    # leaves nprnd nothing. Both dtypes, for the same reason as above: skip one
+    # and the other takes its place.
+    "test_quantile_large_input_cpu_float32":
+        "starves the numpy runtime (separate wasm heap) - ArrayMemoryError in nprnd",
+    "test_quantile_large_input_cpu_float64":
+        "starves the numpy runtime (separate wasm heap) - ArrayMemoryError in nprnd",
+    # Located by bisection down to a single test: it alone accounts for ~950 MB
+    # of torch heap, while both its immediate neighbours run in 15 s using
+    # nothing. It PASSES — what it breaks is what comes next, starting with
+    # test_mean_dim_cpu, which then cannot get 15 MiB from the numpy runtime.
+    "test_mean_out_is_alias_of_return_cpu_bfloat16":
+        "~950 MB of torch heap on its own, starving what follows - nothing is reclaimed between tests",
+    # Reads as a functional bug ("float() argument must be a string or a real
+    # number") but it is not: lin5 and lin6 each give 0 failures, and it only
+    # appears once they share a frame. numpy climbs to 577 MB in that run — by
+    # far the highest nprnd figure measured — so the quantile family is what
+    # loads the second runtime, and the TypeError is a failed allocation
+    # surfacing one call later. Classify by behaviour, not by message.
+    "test_quantile_cpu_float64":
+        "fails only when grouped - numpy at 577 MB, allocation failure surfacing as a TypeError",
+    # Named directly by the per-test peak, not by bisection: PIC numpy 2026 MB @
+    # test_histogramdd_cpu_float32, while torch peaks at 107 MB in the same
+    # slice on a different test. It compares torch.histogramdd against
+    # numpy.histogramdd over 144 parameter combinations, one of which has
+    # D = 10 dimensions; numpy's histogramdd builds a bincount buffer with one
+    # axis of bins+2 per dimension, so that single combination asks for a
+    # (4, 7, 7, ...) array of 164 MiB, again and again. Upstream numpy
+    # behaviour, invisible on a desktop, fatal against a 2 GB ceiling that
+    # never gives memory back.
+    "test_histogramdd_cpu_float32":
+        "numpy.histogramdd allocates a 164 MiB buffer per combination at D=10 - fills the 2 GB nprnd heap",
     "test_as_strided_overflow_storage_offset_cpu":
         "int64-overflow premise - the offset cannot overflow the same way on wasm32",
     "test_resize_overflow_cpu":
@@ -210,7 +351,7 @@ def _arch_skip(tid):
             return True
     return False
 
-def run_module(mod, k=None, part=None, nparts=None):
+def run_module(mod, k=None, part=None, nparts=None, nk=None):
     loader = unittest.TestLoader()
     suite = loader.loadTestsFromModule(mod)
     tests = list(_iter_tests(suite))
@@ -221,16 +362,36 @@ def run_module(mod, k=None, part=None, nparts=None):
         # not the whole suite
         tests = [t for t in tests if k in t.id()]
     if part and nparts:
-        # ?part=i/n — one slice of the suite, for a suite whose heap climbs
-        # WITHIN itself (test_reductions exhausts the 2 GB cap partway
-        # through its ~4700 tests, then everything behind the failed
-        # allocation cascades). Round-robin, not a contiguous cut: the tests
-        # are grouped by class and dtype, so consecutive blocks are wildly
-        # unequal in cost while every n-th test samples the whole suite.
+        # ?part=i/n — one CONTIGUOUS slice of the suite, for a suite whose
+        # heap climbs WITHIN itself (test_reductions exhausts the 2 GB cap
+        # partway through its ~4700 tests, then everything behind the failed
+        # allocation cascades).
+        # This used to be round-robin (`tests[part-1::nparts]`), to even out
+        # slice DURATION since consecutive blocks are wildly unequal in cost.
+        # That is precisely why it had to go: interleaved slices are not
+        # comparable across two values of nparts (the "first quarter" and the
+        # "first fifth" share only every 20th test), nothing tells you which
+        # test sits in which slice, and the heap peak tracked the slice's
+        # composition rather than its size. Contiguous keeps execution order,
+        # so the peak maps onto a position in the suite and cheap neighbouring
+        # ranges can simply be grouped back together.
         # arch_skipped stays whole on part 1 so the totals still add up.
-        tests = tests[part - 1::nparts]
-        if part != 1:
+        # `part` is "i" or a contiguous RANGE "i-j" — cheap neighbouring
+        # eighths of a suite regroup into one frame without renumbering the
+        # others, which is the point of cutting contiguously.
+        _p = str(part)
+        _a, _, _b = _p.partition('-')
+        _a = int(_a); _b = int(_b) if _b else _a
+        _n = len(tests)
+        tests = tests[(_a - 1) * _n // nparts:_b * _n // nparts]
+        if _a != 1:
             arch_skipped = []
+    if nk:
+        # ?nk=substring — drop tests from the slice, AFTER cutting it, so the
+        # population stays exactly the same minus what is named. Used to ask
+        # whether a failing test is the memory hog or merely the one that
+        # arrives when the heap is already full.
+        tests = [t for t in tests if nk not in t.id()]
     suite = unittest.TestSuite(tests)
     res = _TracingResult()
     suite.run(res)
@@ -318,13 +479,14 @@ if (RECLAIM_MODE) {
 }
 const only = params.get('test');
 const kFilter = params.get('k');
+const nkFilter = params.get('nk');
 /* ?failcap=N — how many failing tests to echo per suite (default 40 keeps
    the page readable; a harvest run passes a large N for the full census) */
 const failCap = parseInt(params.get('failcap') || '40', 10);
-/* ?run=long1 / long2 — the long-suite page's two stages. autograd rides
-   along with reductions' first half so the page costs two wasm boots
-   (~86 MB each) instead of three. ?part applies to the split suite only. */
-const LONG = { long1: ['test_autograd', 'test_reductions'], long2: ['test_reductions'] };
+/* ?run=agrad / long2 — the long-suite page's two stages, one suite each.
+   They cannot share a frame: test_reductions alone ends at 1466 MB of torch
+   and 1897 MB of numpy, and test_autograd wants ~1.1 GB of its own. */
+const LONG = { long2: ['test_reductions'], agrad: ['test_autograd'] };
 const runGroup = params.get('run');
 const MODULES = params.get('probe') ? []
   : (only ? [only] : (LONG[runGroup] || ALL_MODULES));
@@ -342,22 +504,34 @@ const MODULES = params.get('probe') ? []
    and a '/' inside the query string breaks module resolution (the import
    of torch itself fails with "No active exception to reraise"). */
 const PART = (() => {
-  const i = parseInt(params.get('part') || '', 10);
+  const raw = (params.get('part') || '').trim();
   const n = parseInt(params.get('nparts') || '', 10);
-  return i > 0 && n > 0 ? [i, n] : null;
+  if (!(n > 0) || !/^\d+(-\d+)?$/.test(raw)) return null;
+  return parseInt(raw, 10) > 0 ? [raw, n] : null;
 })();
-/* Suites whose heap climbs WITHIN themselves past the 2 GB cap: an iframe
-   per suite is not enough, so ?test=<suite> orchestrates N slices of it,
-   each in its own iframe. (test_reductions exhausts the cap partway through
-   its ~4700 tests; everything behind the failed allocation then cascades.) */
-const SPLIT = { test_reductions: 2 };
+/* ?test=<suite> orchestrates the suite in N frames. One is the normal value:
+   a suite gets a frame of its own, and slicing further is what you do while a
+   suite still exhausts the cap within itself. test_reductions needed four
+   until the tests that ate the heap were named and skipped; now its 4684 tests
+   run in a single frame. */
+const SPLIT = { test_reductions: 1 };
 const SPLIT_ME = only && SPLIT[only] && !PART && !runGroup ? SPLIT[only] : 0;
 const IS_RUNNER = !SPLIT_ME && !!(only || params.get('probe') || runGroup);
+/* One frame per suite. Measured on the whole of test_reductions in a single
+   frame: 4684 tests, 30 failures — the same 30 as the sum of its eighths, so
+   grouping now costs nothing and the slicing that used to hide the cascade is
+   gone. It ends at 1466 MB of torch and 1897 MB of numpy, which is also why
+   test_autograd keeps a frame of its own: 151 MB of numpy headroom is not
+   room for a suite that wants ~1.1 GB. Frames stay the only real free we
+   have — nothing is reclaimed within one (`free 0→0`), and the proven walls
+   on that are in wasthon4's README. */
 const STAGES = SPLIT_ME
-  ? [
-      { label: 'test_autograd + test_reductions ½', src: 'test-brytorch-all.html?run=long1&part=1&nparts=2' },
-      { label: 'test_reductions ½', src: 'test-brytorch-all.html?run=long2&part=2&nparts=2' },
-    ]
+  ? [{ label: 'test_autograd', src: 'test-brytorch-all.html?run=agrad' }].concat(
+      Array.from({ length: SPLIT_ME }, (_, i) => ({
+        label: 'test_reductions' + (SPLIT_ME > 1 ? ' ' + (i + 1) + '/' + SPLIT_ME : ''),
+        src: 'test-brytorch-all.html?run=long2&part=' + (i + 1) +
+             '&nparts=' + SPLIT_ME,
+      })))
   : [
       { label: 'test_torch', src: 'test-brytorch-all.html?test=test_torch' },
       { label: 'the quick suites', src: 'test-brytorch-all.html?run=all' },
@@ -832,7 +1006,32 @@ else try {
           : null;
       } catch (e) { return null; }
     };
+    /* TWO wasm heaps share this page — npth for torch, nprnd for numpy — each
+       with its own allocator and its own 2 GB ceiling. Reporting only torch's
+       showed half the picture and made the numbers look contradictory: a slice
+       could fail while torch still had 325 MB free, because the test that broke
+       was numpy's (`_ArrayMemoryError: unable to allocate 164 MiB`) and it is
+       nprnd that ran out. Report both. */
+    /* nprnd is linked with EXPORTED_RUNTIME_METHODS=["HEAP32","FS"] — no
+       HEAPU8 — so read the size through HEAP32 (4 bytes per element). */
+    const npMB = () => {
+      try {
+        if (!Mnp) return null;
+        const buf = Mnp.HEAPU8 ? Mnp.HEAPU8.length
+                  : (Mnp.HEAP32 ? Mnp.HEAP32.length * 4 : null);
+        return buf === null ? null : Math.round(buf / 1048576);
+      } catch (e) { return null; }
+    };
+    try {
+      globalThis.wtPeakT = 0; globalThis.wtPeakTTest = '';
+      globalThis.wtPeakN = 0; globalThis.wtPeakNTest = '';
+      globalThis.wtJumpT = 0; globalThis.wtJumpTTest = '';
+      globalThis.wtJumpN = 0; globalThis.wtJumpNTest = '';
+      globalThis.wtPrevT = 0; globalThis.wtPrevN = 0;
+      globalThis.wtPeakErr = '';
+    } catch (e) {}
     const miBefore = mi();
+    const npBefore = npMB();
     const driver = runnerSrc +
       "\n\ntry:" +
       "\n    _mod = __import__(" + JSON.stringify(mod) + ", fromlist=[\"_\"])" +
@@ -844,8 +1043,9 @@ else try {
       "\n    print(\"IMPORT TRACEBACK:\\n\" + _sio.getvalue())" +
       "\nelse:" +
       "\n    _p, _f, _s, _fails = run_module(_mod, " + (kFilter ? JSON.stringify(kFilter) : "None") +
-      ", " + (PART && SPLIT[mod] ? PART[0] : "None") +
-      ", " + (PART && SPLIT[mod] ? PART[1] : "None") + ")" +
+      ", " + (PART && SPLIT[mod] ? JSON.stringify(PART[0]) : "None") +
+      ", " + (PART && SPLIT[mod] ? PART[1] : "None") +
+      ", " + (nkFilter ? JSON.stringify(nkFilter) : "None") + ")" +
       "\n    print(\"@@ran=\" + str(_p + _f + _s))" +
       "\n    print(\"@@passed=\" + str(_p))" +
       "\n    print(\"@@failed=\" + str(_f))" +
@@ -907,6 +1107,28 @@ else try {
       const rn = passed + fail, rate = rn ? Math.round(100 * passed / rn) : 100;
       const bar = `<span class="barbg"><span class="bar" style="width:${Math.round(0.8 * rate)}px"></span></span> ${rate}%`;
       const heapMB = Math.round(M.HEAPU8.length / 1048576);
+      /* the per-test peak, and which test reached it — see _TracingResult */
+      let peakTxt = '';
+      try {
+        const pt = globalThis.wtPeakT, ptt = globalThis.wtPeakTTest;
+        const pn = globalThis.wtPeakN, pnt = globalThis.wtPeakNTest;
+        if (pt) peakTxt += ' · PIC torch ' + Math.round(pt / 1048576) + ' Mo @ ' +
+                           String(ptt).split('.').pop();
+        if (pn) peakTxt += ' · PIC numpy ' + Math.round(pn / 1048576) + ' Mo @ ' +
+                           String(pnt).split('.').pop();
+        /* the biggest single-test RISE — this is the allocator, where the
+           peak above is only where the ceiling happened to be reached */
+        const jt = globalThis.wtJumpT, jtt = globalThis.wtJumpTTest;
+        const jn = globalThis.wtJumpN, jnt = globalThis.wtJumpNTest;
+        if (jt) peakTxt += ' · SAUT torch +' + Math.round(jt / 1048576) + ' Mo @ ' +
+                           String(jtt).split('.').pop();
+        if (jn) peakTxt += ' · SAUT numpy +' + Math.round(jn / 1048576) + ' Mo @ ' +
+                           String(jnt).split('.').pop();
+        if (globalThis.wtPeakErr) peakTxt += ' · PIC ERR ' + globalThis.wtPeakErr;
+      } catch (e) {}
+      const npAfter = npMB();
+      const npTxt = (npBefore !== null && npAfter !== null)
+        ? ' · numpy heap ' + npBefore + '→' + npAfter + ' Mo' : '';
       const miAfter = mi();
       const miTxt = (miBefore && miAfter)
         ? ` · used ${miBefore[0]}→${miAfter[0]} Mo, free ${miBefore[1]}→${miAfter[1]} Mo` : '';
@@ -916,7 +1138,7 @@ else try {
       const firstFail = allpass ? '' :
         (buf.match(/^\s*FAIL (.+)$/m) || [null, ''])[1].trim().slice(0, 140);
       setRow(i, allpass ? 'allpass' : 'somefail', [ran, passed, fail, skipped, bar,
-        (allpass ? '✓' : '✗ ' + secs + 's') + ' · heap ' + heapMB + ' Mo' + miTxt
+        (allpass ? '✓ ' : '✗ ') + secs + 's · torch heap ' + heapMB + ' Mo' + miTxt + npTxt + peakTxt
         + (firstFail ? ' · ' + firstFail : '')]);
     }
     /* (no between-suites reclaim — see the RECLAIM DISABLED note above) */

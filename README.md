@@ -49,6 +49,37 @@ Eager mode: tensor creation, arithmetic, matmul, reductions, indexing,
 Excluded for now: `torch.compile`/export/fx-tracing paths, distributed,
 multiprocessing (no fork in wasm), CUDA (obviously).
 
+### Where the edge actually is
+
+51 upstream suites were probed for importability; **30 import as they stand**.
+Of the 21 that do not, most are held up by a missing pure-Python package or a
+stub still to write — `packaging`, `setuptools`, `yaml`, `functorch`, a
+sibling test package, `_inductor.async_compile`. Only two causes are
+structural: `optree`, a C extension, and `_dynamo`, which needs CPython's
+frame-evaluation API and cannot exist here. `torch.export` sits behind
+`_dynamo` — it imports it at module level, though only for exception classes
+and decorators that are inert without a compiler.
+
+So the boundary is not where the v1 slice drew it. Most of what is missing is
+plumbing; what is genuinely out of reach is the compiler.
+
+## Measured against PyTorch's own test suites
+
+The dashboards run upstream `pytorch/test/test_*.py` **unmodified**, with the
+real `torch.testing._internal` harness, against the wasm `torch._C`. Nothing
+is rewritten to pass: a suite says what it says.
+
+- **1/3** — `test_torch`, then the quick suites
+- **2/3** — `test_autograd`, then `test_reductions`: 4684 tests, 30 failures,
+  none of them caused by memory
+- **3/3** — a second tier of nineteen further suites in one frame,
+  1434/1465 pass; eleven of them green the first time they were ever run
+
+A suite gets its own iframe when it needs one, and no sooner. A wasm heap
+only ever grows, and destroying a frame is the only real free there is — so
+frames are how a suite that wants a gigabyte stops being the reason the next
+one fails.
+
 ## Build
 
 Everything is built from source; no artifacts are committed.

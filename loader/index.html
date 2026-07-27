@@ -28,8 +28,9 @@
 
 <h2>Test-suite dashboards</h2>
 <ul class="dash">
-  <li><a href="test-brytorch-all.html"><strong>▶ PyTorch suite dashboard 1/2</strong></a> — PyTorch's own <code>test/test_*.py</code> (with the real <code>torch.testing._internal</code> harness) against the wasm <code>torch._C</code>: <code>test_torch</code> then the quick suites, two iframes so each stage runs on a fresh heap.</li>
-  <li><a href="test-brytorch-all.html?test=test_reductions"><strong>▶ PyTorch suite dashboard 2/2</strong></a> — the long suites, same two-iframe scheme: <code>test_autograd</code> + half of <code>test_reductions</code>, then the other half.</li>
+  <li><a href="test-brytorch-all.html"><strong>▶ PyTorch suite dashboard 1/3</strong></a> — PyTorch's own <code>test/test_*.py</code> (with the real <code>torch.testing._internal</code> harness) against the wasm <code>torch._C</code>: <code>test_torch</code> then the quick suites, two iframes so each stage runs on a fresh heap.</li>
+  <li><a href="test-brytorch-all.html?test=test_reductions"><strong>▶ PyTorch suite dashboard 2/3</strong></a> — the long suites, one frame each: <code>test_autograd</code>, then the whole of <code>test_reductions</code> (4684 tests in a single frame).</li>
+  <li><a href="test-brytorch-all.html?dash=3"><strong>▶ PyTorch suite dashboard 3/3</strong></a> — the second tier of upstream suites, in a single frame — those that pass, and those with nothing left but a short list of failures with a named root.</li>
   <li><a href="test-cpython-all.html"><strong>▶ CPython suite dashboard</strong></a> — CPython's own <code>Lib/test/test_*.py</code> against the Wasthon bridge stack BryTorch runs on (the authoritative behavioural reference).</li>
 </ul>
 

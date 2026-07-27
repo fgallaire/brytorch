@@ -1025,6 +1025,24 @@ const TEST_SUITES = [
   'test_testing', 'test_indexing', 'test_view_ops', 'test_shape_ops',
   'test_type_promotion', 'test_sort_and_select', 'test_reductions',
   'test_serialization', 'test_autograd', 'test_torch',
+  // Second tier, probed for importability: eager CPU suites that sit on the
+  // same torch._C. Only the ones that actually import stay here.
+  'test_nn', 'test_ops', 'test_ops_gradients', 'test_ops_fwd_gradients',
+  'test_linalg', 'test_unary_ufuncs', 'test_binary_ufuncs',
+  'test_tensor_creation_ops', 'test_spectral_ops', 'test_scatter_gather_ops',
+  'test_segment_reductions', 'test_masked', 'test_maskedtensor',
+  'test_foreach', 'test_complex', 'test_numpy_interop', 'test_overrides',
+  'test_python_dispatch', 'test_subclass', 'test_modules', 'test_optim',
+  'test_nestedtensor', 'test_sparse', 'test_autocast',
+  'test_autograd_fallback', 'test_as_strided', 'test_dlpack',
+  'test_expanded_weights', 'test_function_schema', 'test_dispatch',
+  'test_native_functions', 'test_namedtuple_return_api', 'test_type_info',
+  'test_utils', 'test_pytree', 'test_weak', 'test_legacy_vmap',
+  'test_stateless', 'test_prims', 'test_meta', 'test_fake_tensor',
+  'test_schema_check', 'test_tensor_iterator', 'test_futures',
+  'test_comparison_utils', 'test_public_bindings', 'test_bmm_outer_product',
+  'test_content_store', 'test_flop_counter', 'test_module_tracker',
+  'test_per_overload_api',
 ];
 for (const t of TEST_SUITES) {
   add(t, fs.readFileSync(path.join(PT, 'test', t + '.py'), 'utf8'), false);

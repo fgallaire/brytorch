@@ -344,6 +344,20 @@ const PATCH = {
     + '                t.requires_grad_(True)\n'
     + '            return t\n'
     + '        return _wasthon_c_tensor(*args, **kw)\n'
+    // TorchScript's builtin table is keyed by id() and is built while
+    // torch.jit imports, i.e. BEFORE this patch runs at the end of
+    // torch/__init__ — so it still holds the id of the C tensor/as_tensor and
+    // _find_builtin misses the wrappers. jit then tries to COMPILE them and
+    // stops on the *args/**kw signature. Re-register both under the same aten
+    // ops, which is what _register_builtin exists for. (zeros/arange are
+    // untouched by this patch and were found correctly, which is how the
+    // ordering showed up.)
+    + '    try:\n'
+    + '        from torch.jit._builtins import _register_builtin as _wasthon_regb\n'
+    + '        _wasthon_regb(tensor, "aten::tensor")\n'
+    + '        _wasthon_regb(as_tensor, "aten::as_tensor")\n'
+    + '    except Exception:\n'
+    + '        pass\n'
     // Tensor.new is the LEGACY constructor: it never goes through
     // __torch_function__, so the ndarray handler above never sees it and the
     // raw foreign array reaches legacy_tensor_generic_ctor_new, which reads it

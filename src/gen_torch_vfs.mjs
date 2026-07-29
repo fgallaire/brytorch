@@ -612,6 +612,26 @@ add('ctypes', [
   '        self._elems = [e & 0xff for e in elems]',
   '    def _as_bytes(self):',
   '        return self._elems',
+  '    def __len__(self):',
+  '        return len(self._elems)',
+  '    def __getitem__(self, i):',
+  '        return self._elems[i]',
+  '    def __iter__(self):',
+  '        return iter(self._elems)',
+  '    def __bytes__(self):',
+  '        return bytes(self._elems)',
+  // A raw address is meaningful here: it points into the torch wasm's linear
+  // memory, which is exactly what HEAPU8 exposes. Used by hash_storage
+  // (torch/utils/_content_store.py) to feed a storage's bytes to sha1.
+  // ⚠ CPython returns a writeable VIEW of that memory; this returns the bytes
+  // themselves. Both differences are deliberate and bounded: every caller in
+  // the v1 slice only reads, and hands the result straight to a hash.
+  '    @classmethod',
+  '    def from_address(cls, addr):',
+  '        from browser import window',
+  '        n = cls._length_ * getattr(cls._type_, "_size_", 1)',
+  '        heap = window._twasm.HEAPU8',
+  '        return bytes(heap[addr + i] for i in range(n))',
   'def _make_array(elemcls, n):',
   '    return type("Array_%d" % n, (Array,), {"_type_": elemcls, "_length_": n})',
   '_CT = {',
@@ -961,6 +981,12 @@ add('torch._dynamo.utils', [
   '        self.kwargs = kwargs',
   '    def __str__(self):',
   '        return self.func(*self.args, **self.kwargs)',
+  // hash_storage (torch/utils/_content_store.py) asks whether the device can
+  // be compiled before choosing a hashing path, and takes the eager one when
+  // the answer is no. False is not a placeholder here: it is what upstream
+  // itself computes, since is_dynamo_supported() is false without a compiler.
+  'def is_compile_supported(device_type):',
+  '    return False',
   'def __getattr__(name):',
   '    raise ImportError("torch._dynamo is not in this wasm build (v1): attr utils." + name)',
   ''].join('\n'), false);

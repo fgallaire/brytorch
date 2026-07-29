@@ -704,7 +704,12 @@ else try {
   summary.textContent = '⏳ Loading VFS…';
   /* numpy first: on shared stdlib shims (ctypes) the LAST update_VFS wins,
      and torch's are the richer ones (torch.xpu needs ctypes.byref). */
-  const hasNumpyVfs = await loadVfs('../build/numpy_vfs.js', true);
+  /* ?nonumpy=1 — boot torch alone. The second wasm is what makes a type
+     identity ambiguous (one Brython, two runtimes stamping the same class),
+     so a behaviour that changes without it is a cross-runtime effect and not
+     a torch one. Diagnostic only; the dashboards never pass it. */
+  const hasNumpyVfs = params.get('nonumpy')
+    ? false : await loadVfs('../build/numpy_vfs.js', true);
   /* real sympy+mpmath (pure Python, from numbry): torch's symbolic-shapes
      dependency — the _refs_* reduction variants compile through it */
   await loadVfs('../build/sympy_vfs.js', true);
@@ -790,7 +795,12 @@ else try {
                              ['legacy_conv2d.pt', '/data'],
                              ['network1.py', '/torch/testing/_internal/data'],
                              ['network2.py', '/torch/testing/_internal/data'],
-                             ['UTC', '/usr/share/zoneinfo']]) {
+                             ['UTC', '/usr/share/zoneinfo'],
+                             // test_public_bindings opens it next to its own
+                             // __file__; a VFS module has no directory, so
+                             // dirname() is '' and the path resolves at the
+                             // FS root
+                             ['allowlist_for_publicAPI.json', '']]) {
       const r = await fetch('./testdata/' + fn);
       if (r.ok) M.FS.writeFile(dir + '/' + fn, new Uint8Array(await r.arrayBuffer()));
     }

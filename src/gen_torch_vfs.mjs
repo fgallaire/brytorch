@@ -906,9 +906,24 @@ add('torch._higher_order_ops.utils', [
   '    return False',
   // rng_prims imports these at module level; they only DECORATE hop
   // registrations, so pass-through/None keeps the definitions inert
+  // Upstream does NOT refuse on sight: it dispatches below autograd and only
+  // objects when grad is enabled AND an operand requires it. Refusing on every
+  // call made the op unusable in the ordinary no-grad case, which is what
+  // test_prims exercises. The DelayedError branch (deferred_error=True) is the
+  // one piece left out: without an autograd graph there is nothing to defer to.
   'def autograd_not_implemented(op, deferred_error=False):',
+  '    import torch',
+  '    from torch.utils import _pytree as _pt',
   '    def _fn(*a, **k):',
-  '        raise NotImplementedError("autograd not implemented (wasm v1)")',
+  '        with torch._C._AutoDispatchBelowAutograd():',
+  '            result = op(*a, **k)',
+  '        leaves = _pt.arg_tree_leaves(*a)',
+  '        if torch.is_grad_enabled() and any(',
+  '                f.requires_grad for f in leaves',
+  '                if isinstance(f, torch.Tensor)):',
+  '            raise RuntimeError(',
+  '                "Autograd not implemented for " + str(op))',
+  '        return result',
   '    return _fn',
   'def register_fake(op, *a, **k):',
   '    def _deco(fn):',

@@ -120,10 +120,19 @@ PyObject *PyByteArray_FromObject(PyObject *o) {
     return PyObject_CallFunctionObjArgs(cls, o, NULL);
 }
 PyObject *PyMemoryView_FromBuffer(const Py_buffer *view) {
-    /* v1: copy through bytes (read-only). Real zero-copy needs bridge help. */
+    /* v1: copy through bytes (read-only). Real zero-copy needs bridge help.
+     * The copy is a BYTE view, which loses the caller's format and itemsize:
+     * len() then counts bytes instead of elements, and TensorIterator.strides
+     * (a "q"/int64 view of 1 element) measured 8 instead of 1. Cast it back to
+     * the requested format so the view describes what the caller declared. */
     PyObject *b = PyBytes_FromStringAndSize((const char *)view->buf, view->len);
     if (!b) return NULL;
     PyObject *mv = PyMemoryView_FromObject(b);
+    if (mv && view->format && view->itemsize > 1) {
+        PyObject *cast = PyObject_CallMethod(mv, "cast", "s", view->format);
+        if (cast) { Py_DECREF(mv); return cast; }
+        PyErr_Clear();   /* no cast available: the byte view still works */
+    }
     return mv;
 }
 void PyUnicode_InternInPlace(PyObject **p) { (void)p; }

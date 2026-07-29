@@ -366,6 +366,22 @@ const PATCH = {
     // (`x.new(np.array((3, 4)))` is `[3, 4]` in x's dtype), and that is exactly
     // what handing over `.tolist()` gives — same value-copy boundary the
     // tensor()/as_tensor() wrappers above already use.
+    // Tensor.to(dtype=bool) / .to(bool): upstream's arg parser accepts a
+    // PYTHON scalar type where a dtype is expected (THPPythonScalarType_Check
+    // is `obj == (PyObject*)&PyBool_Type` and friends). int and float resolve
+    // through the bridge, bool and complex do not — measured, and only when
+    // the numpy runtime shares the page (?nonumpy=1 accepts all four), so the
+    // pointer that reaches C is not the canonical struct. Until that is fixed
+    // in the bridge, translate at the Python boundary with the same table the
+    // tensor()/as_tensor() wrappers use.
+    + '    _wasthon_c_to = Tensor.to\n'
+    + '    def _wasthon_tensor_to(self, *a, **kw):\n'
+    + '        if kw.get("dtype") is not None:\n'
+    + '            kw["dtype"] = _wasthon_fix_dtype(kw["dtype"])\n'
+    + '        if a and a[0] in _wasthon_pydt:\n'
+    + '            a = (_wasthon_pydt[a[0]],) + a[1:]\n'
+    + '        return _wasthon_c_to(self, *a, **kw)\n'
+    + '    Tensor.to = _wasthon_tensor_to\n'
     + '    _wasthon_c_tensor_new = Tensor.new\n'
     + '    def _wasthon_tensor_new(self, *a, **kw):\n'
     + '        if a and isinstance(a[0], _wasthon_np.ndarray):\n'

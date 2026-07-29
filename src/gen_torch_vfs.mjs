@@ -1017,6 +1017,20 @@ add('torch._dynamo.utils', [
   // itself computes, since is_dynamo_supported() is false without a compiler.
   'def is_compile_supported(device_type):',
   '    return False',
+  // "copy while preserving strides" — upstream's own docstring. Its other
+  // branches are for fake tensors, sparse layouts, pinned CPU memory and
+  // traceable wrapper subclasses, none of which exist in the v1 slice; what
+  // remains IS this. Written out rather than raised on, because the caller
+  // wants the copy.
+  'def clone_input(x, *, dtype=None):',
+  '    import torch',
+  '    with torch.no_grad():',
+  '        y = torch.empty_strided(x.size(), x.stride(),',
+  '                                dtype=dtype or x.dtype, device=x.device)',
+  '        y.copy_(x)',
+  '        if x.is_leaf:',
+  '            y.requires_grad_(x.requires_grad)',
+  '        return y',
   'def __getattr__(name):',
   '    raise ImportError("torch._dynamo is not in this wasm build (v1): attr utils." + name)',
   ''].join('\n'), false);
@@ -1027,6 +1041,14 @@ add('torch._dynamo.utils', [
 // file
 add('torch._dynamo.config',
     fs.readFileSync(path.join(PT, 'torch', '_dynamo', 'config.py'), 'utf8'),
+    false);
+
+// test_prims imports it to get torch.ops.prims.inductor_seeds registered — a
+// stub cannot help, the module's job IS the registration. It only pulls torch,
+// torch._prims and torch._utils, so it ships REAL like _dynamo.config above:
+// none of the compiler is in its import chain.
+add('torch._inductor.inductor_prims',
+    fs.readFileSync(path.join(PT, 'torch', '_inductor', 'inductor_prims.py'), 'utf8'),
     false);
 
 // autograd/test_logging.py mentions it under `if __name__ == "__main__"` —

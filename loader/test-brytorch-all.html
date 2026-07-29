@@ -233,6 +233,11 @@ WASTHON_SKIPS = {
     "test_no_warning_on_import": "subprocess (posix.pipe) - no processes in the browser",
     "test_not_import_sympy": "subprocess (posix.pipe) - no processes in the browser",
     "test_not_import_triton": "subprocess (posix.pipe) - no processes in the browser",
+    # test_stateless: same premise, a fresh interpreter launched to observe
+    # what importing torch does (an -OO run, and a warning count returned as
+    # an exit code)
+    "test_runs_with_optimize_flag": "subprocess (posix.pipe) - no processes in the browser",
+    "test_private_stateless_warns": "subprocess (posix.pipe) - no processes in the browser",
     # same intra-op-pool poisoning as test_parallel_cow_materialize_error_*
     # below: raises the thread count, then bmm's parallel path builds the pool
     "test_bmm_multithreaded":

@@ -99,7 +99,7 @@ stage_sources() {
   git -C "$PT" submodule update --init --depth 1
   git -C "$PT/third_party/fbgemm" submodule update --init --depth 1 external/asmjit 2>/dev/null || true
   echo "=== sources: apply the port ==="
-  # 1) the five recette-patches (the ONLY C++ edits in 1.1M lines)
+  # 1) the six recette-patches (the ONLY C++ edits in 1.1M lines)
   python3 - "$PT" << 'PYEOF'
 import sys, pathlib
 pt = pathlib.Path(sys.argv[1])
@@ -117,6 +117,30 @@ if old in s:
     # held" guard is moot (the bridge's PyGILState_Check is constant 1,
     # and every other site asserts the OPPOSITE polarity)
     s = s.replace(old, '      true,  /* brytorch: single-thread, anti-deadlock GIL guard moot */')
+    f.write_text(s)
+f = pt / 'torch/csrc/profiler/python/init.cpp'
+s = f.read_text()
+old = '''    return py_symbolize(tb_ptrs);'''
+if old in s and 'brytorch: no unwinder' not in s:
+    # There is no stack unwinder in wasm: symbolize() yields no traceback, so
+    # py_symbolize either returns short or throws out_of_range indexing its own
+    # empty vector. Either way pybind11 surfaces an IndexError from
+    # torch/utils/_traceback.py's `symbolize_tracebacks([tb])[0]`, far from the
+    # cause and in the middle of make_fx. The contract is one entry PER INPUT:
+    # honour it with an empty traceback, which says "no symbols" honestly.
+    # (combined_traceback.cpp itself lives in libtorch_cpu.a, hours to rebuild;
+    # this is the same fix in a TU the port compiles.)
+    s = s.replace(old,
+        '''    std::vector<py::object> syms;
+    try {
+      syms = py_symbolize(tb_ptrs);
+    } catch (const std::exception&) {
+      syms.clear();  /* brytorch: no unwinder in wasm */
+    }
+    while (syms.size() < tbs.size()) {
+      syms.push_back(py::list());
+    }
+    return syms;''')
     f.write_text(s)
 f = pt / 'torch/csrc/utils/pybind.h'
 s = f.read_text()

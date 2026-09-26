@@ -155,7 +155,12 @@ PyObject *PyCode_GetVarnames(PyCodeObject *code);
 
 /* --- free-threading probe (3.14): no-op single-thread --- */
 static inline void PyUnstable_EnableTryIncRef(PyObject *obj) { (void)obj; }
-static inline int PyUnstable_TryIncRef(PyObject *obj) { (void)obj; return 1; }
+/* Single-threaded, an object handed to us is alive, so the try always
+ * succeeds — but it must still take the reference: torch's weak_intrusive_ptr
+ * lock() calls it in place of incref_pyobject() when a weak ref to a tensor
+ * becomes strong, and the decref_pyobject() that ends that strong ref is the
+ * ordinary one (test_retain_grad_inplace: the retain_grad hook). */
+static inline int PyUnstable_TryIncRef(PyObject *obj) { Py_INCREF(obj); return 1; }
 
 /* --- pass 3 (full torch/csrc sweep) --- */
 int PySet_Add(PyObject *set, PyObject *key);

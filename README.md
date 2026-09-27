@@ -75,10 +75,10 @@ is rewritten to pass: a suite says what it says.
 - **3/3** — a second tier of nineteen further suites in one frame,
   1434/1465 pass; eleven of them green the first time they were ever run
 
-A suite gets its own iframe when it needs one, and no sooner. A wasm heap
-only ever grows, and destroying a frame is the only real free there is — so
-frames are how a suite that wants a gigabyte stops being the reason the next
-one fails.
+A suite gets its own iframe when it needs one, and no sooner. Between two
+tests a whole-heap collection gives back what the finished tests left; a wasm
+heap still never shrinks, so a suite that wants a gigabyte at its peak gets a
+frame of its own rather than becoming the reason the next one fails.
 
 ## Build
 

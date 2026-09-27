@@ -102,8 +102,8 @@ class _TracingResult(unittest.TestResult):
             if n_used > (window.wtPeakN or 0):
                 window.wtPeakN = n_used
                 window.wtPeakNTest = test.id()
-            # ★ The MAXIMUM is not the culprit. Nothing is reclaimed inside a
-            # frame, so `used` only climbs and its max is reached near the END:
+            # ★ The MAXIMUM is not the culprit. `used` only climbs through a
+            # test (the collection runs between two), so its max is a ceiling:
             # "peak @ test" names where the ceiling was hit, not who allocated.
             # It was a real attribution on test_histogramdd only because the
             # neighbours were FLAT (18 MB, then 2026 MB). What identifies the
@@ -118,6 +118,8 @@ class _TracingResult(unittest.TestResult):
                 window.wtJumpNTest = test.id()
             window.wtPrevT = t_used
             window.wtPrevN = n_used
+            if window.wtCollect:
+                window.wtCollect(test.id())
         except Exception as e:
             try:
                 from browser import window as _w
@@ -410,7 +412,7 @@ def run_module(mod, k=None, part=None, nparts=None, nk=None):
     tests = list(_iter_tests(suite))
     # ?noskip=1 — run what WASTHON_SKIPS holds back. Dashboard 4/4 uses it to
     # give each greedy test a frame of its own: they all PASS alone, and the
-    # skip list only exists because nothing is reclaimed between two tests.
+    # skip list dates from before the collection between two tests.
     arch_skipped = [t for t in tests if _arch_skip(t.id())]
     tests = [t for t in tests if not _arch_skip(t.id())]
     if _NOSKIP:
@@ -573,6 +575,12 @@ const params = new URLSearchParams(location.search);
    shared tensors skipped, collected wrappers freed via the stamped type. */
 const RECLAIM_MODE = params.get('reclaim');
 const RECLAIM_DRY = !!RECLAIM_MODE;
+/* Between two tests, once a heap has grown by ?collectmb= (64 MB by default),
+   a whole-heap collection gives back what the finished tests left
+   ($wasthon_reclaim, both runtimes). ?collect=dry only counts what it would
+   free. */
+const COLLECT_MODE = params.get('collect') || '1';
+const COLLECT_MB = parseInt(params.get('collectmb') || '64', 10);
 /* canary: the v1 corruption signature — count pybind11's registry assert
    as it hits the console so the harness sees corruption, not just scores */
 globalThis.__CANARY = 0;
@@ -602,6 +610,10 @@ const failCap = parseInt(params.get('failcap') || '40', 10);
    and 1897 MB of numpy, and test_autograd wants ~1.1 GB of its own. */
 const LONG = { long2: ['test_reductions'], agrad: ['test_autograd'],
                v2: V2_MODULES,
+               /* ?run=d1 — dashboard 1/4 in ONE frame, test_torch included:
+                  the collection gives the heap back between two tests, and
+                  test_torch no longer needs one of its own */
+               d1: ['test_torch'].concat(ALL_MODULES),
                tco: ['test_tensor_creation_ops'],
                /* ?run=dbg — the two suites in the order that aborts, for a
                   build with assertions on. Diagnostic only. */
@@ -641,14 +653,14 @@ const IS_RUNNER = !DASH && !!(only || params.get('probe') || runGroup);
    grouping now costs nothing and the slicing that used to hide the cascade is
    gone. It ends at 1466 MB of torch and 1897 MB of numpy, which is also why
    test_autograd keeps a frame of its own: 151 MB of numpy headroom is not
-   room for a suite that wants ~1.1 GB. Frames stay the only real free we
-   have — nothing is reclaimed within one (`free 0→0`), and the proven walls
-   on that are in wasthon4's README. */
+   room for a suite that wants ~1.1 GB. Within a frame, the whole-heap
+   collection gives back between two tests what the finished ones left
+   (wasthon's README, "Object lifetime"). */
 // Dashboard 4/4 (?dash=4): every greedy test, one FRAME each. They all pass
 // when they have the heap to themselves — that is precisely why they are in
 // WASTHON_SKIPS, and this page is the proof read as a table rather than taken
 // on trust. Each frame carries ?noskip=1 so the skip list steps aside, and the
-// frame dies with its test, which is the only real free this port has.
+// frame dies with its test.
 const GLUTTONS = [
   ['test_scatter_gather_ops', 'test_gather_large_cpu_bfloat16'],
   ['test_tensor_creation_ops', 'test_cat_in_channels_last_cpu,test_linspace_cpu_complex128'],
@@ -678,10 +690,7 @@ const STAGES = DASH === '4'
         src: 'test-brytorch-all.html?run=long2&part=' + (i + 1) +
              '&nparts=' + SPLIT_ME,
       })))
-  : [
-      { label: 'test_torch', src: 'test-brytorch-all.html?test=test_torch' },
-      { label: 'the quick suites', src: 'test-brytorch-all.html?run=all' },
-    ];
+  : [{ label: 'test_torch and the quick suites', src: 'test-brytorch-all.html?run=d1' }];
 
 function init() {
   /* single-suite view (?test=X): no dashboard table and no cross-suite
@@ -740,7 +749,8 @@ async function runStages() {
     tbody.innerHTML = frozen + groupRow(stage.label, 'booting…');
     const iframe = document.createElement('iframe');
     iframe.style.display = 'none';
-    iframe.src = stage.src + (RECLAIM_MODE ? '&reclaim=' + RECLAIM_MODE : '');
+    iframe.src = stage.src + (RECLAIM_MODE ? '&reclaim=' + RECLAIM_MODE : '') +
+      (COLLECT_MODE ? '&collect=' + COLLECT_MODE + '&collectmb=' + COLLECT_MB : '');
     document.body.appendChild(iframe);
     const doc = await new Promise(resolve => {
       const poll = setInterval(() => {
@@ -1211,6 +1221,43 @@ else try {
       globalThis.wtPrevT = 0; globalThis.wtPrevN = 0;
       globalThis.wtPeakErr = '';
     } catch (e) {}
+    /* called by _TracingResult.stopTest — the one point where no expression
+       of the test is half evaluated, so a collection sees every holder */
+    globalThis.wtCollect = null;
+    if (COLLECT_MODE && $B.$wasthon_reclaim) {
+      const cs = globalThis.wtCollectState ||
+        (globalThis.wtCollectState = { lastT: 0, lastN: 0, passes: 0, ms: 0, freed: 0,
+                                       dead: 0, withDel: 0, cut: 0, rts: {} });
+      const label = (rt, k) => rt === M.wasthon ? 'torch'
+        : (Mnp && rt === Mnp.wasthon ? 'numpy' : 'rt' + k);
+      globalThis.wtCollect = (tid) => {
+        const t = mi(), n = npMi();
+        const ut = t ? t[0] : 0, un = n ? n[0] : 0;
+        if (ut - cs.lastT < COLLECT_MB && un - cs.lastN < COLLECT_MB) return;
+        let st;
+        try { st = $B.$wasthon_reclaim({ dry: COLLECT_MODE === 'dry' }); }
+        catch (e) { console.log('[collect] ' + tid + ' FAILED ' + e); return; }
+        cs.passes++; cs.ms += st.ms; cs.freed += st.freed; cs.dead += st.dead;
+        cs.withDel += st.withDel; if (st.cut) cs.cut++;
+        const parts = st.rts.map((r, k) => {
+          const lb = label($B.$wasthon_rts[k], k);
+          const a = cs.rts[lb] || (cs.rts[lb] = { dead: 0, sole: 0, freed: 0, tensorMB: 0, gotMB: 0 });
+          a.dead += r.dead; a.sole += r.sole; a.freed += r.freed; a.tensorMB += r.tensorMB;
+          a.gotMB += Math.max(0, r.usedMB - r.usedAfterMB);
+          return lb + ' ' + r.usedMB + '→' + r.usedAfterMB + ' Mo, cands ' + r.cands +
+                 ', dead ' + r.dead + ' (sole ' + r.sole + '), freed ' + r.freed +
+                 (r.tensorMB ? ', tensors ≤' + r.tensorMB + ' Mo' : '') +
+                 ' ' + JSON.stringify(r.types);
+        });
+        console.log('[collect] ' + String(tid).split('.').pop() + ' ' + st.ms + ' ms, ' +
+                    st.passes + ' pass' + (st.passes > 1 ? 'es' : '') +
+                    (st.cut ? ' CUT' : '') + (st.withDel ? ', __del__ ' + st.withDel : '') +
+                    ' :: ' + parts.join(' || '));
+        const t2 = mi(), n2 = npMi();
+        cs.lastT = t2 ? t2[0] : ut; cs.lastN = n2 ? n2[0] : un;
+        $B.$wt_relstats = cs;
+      };
+    }
     const miBefore = mi();
     const npBefore = npMB();
     const npMiBefore = npMi();

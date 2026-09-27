@@ -67,8 +67,7 @@ jobs:
         run: |
           mkdir -p _site/build
           cp -r loader _site/loader
-          cp build/npth.mjs build/torch_vfs.js \
-             build/wasthon-full.mjs build/wasthon-full.wasm _site/build/
+          cp build/npth.mjs build/torch_vfs.js _site/build/
           # NumBry numpy artifacts (fetched by the build's numbry stage) — the
           # dashboard loads them alongside torch; without this copy they 404 and
           # every numpy-dependent suite fails "No module named numpy"

@@ -346,15 +346,8 @@ stage_numbry() {
 }
 
 stage_site() {
-  echo "=== site: CPython suite dashboard (wasthon-full bundle, from the wasthon clone) ==="
-  ( cd "$W" && bash build.sh wasthon-full )
-  cp "$W/build/wasthon-full.mjs" "$W/build/wasthon-full.wasm" "$HERE/build/"
-  cp "$W"/loader/test-cpython-all.html "$W"/loader/test-cpython.html \
-     "$W"/loader/brython-src.js "$W"/loader/wasthon-loader.js \
-     "$W"/loader/wasthon-io-write.js "$W"/loader/wasthon-fs.js \
-     "$W"/loader/wasthon-dealloc.js "$W"/loader/wasthon-dbm.js "$HERE/loader/"
-  rm -rf "$HERE/loader/cpython-tests"
-  cp -r "$W/loader/cpython-tests" "$HERE/loader/"
+  echo "=== site: the bridge's filesystem and I/O helpers the dashboard loads ==="
+  cp "$W"/loader/wasthon-io-write.js "$W"/loader/wasthon-fs.js "$HERE/loader/"
   echo "=== site: single wasm if it fits, else split into parts + stage brython ==="
   python3 - "$HERE/build" << 'PYEOF'
 import json, os, sys

@@ -417,6 +417,14 @@ const PATCH = {
     + '    _wasthon_Size.__rmul__ = _wasthon_size_mul\n'
     + 'except Exception:\n'
     + '    pass\n',
+  // Upstream test bug, fixed by a PyTorch PR (branch segment-reduce-args-tuple):
+  // the positional args are a SET, so `*args` hands the reduce string over as
+  // `data` whenever it hashes first — under Brython that depends on how many
+  // objects were hashed before, so the ten float64 cases passed or failed with
+  // whatever ran earlier in the page.
+  'test_segment_reductions': (s) => s.replace(
+    'segment_reduce_args = {x, reduce}',
+    'segment_reduce_args = (x, reduce)'),
 };
 
 // Every v1 stub raises ImportError from a PEP-562 module __getattr__. A
